@@ -1,16 +1,14 @@
 <div align="center">
 
-# fc-emu
-
-**一个从首个可玩目标开始向外生长的 Rust FC/NES 模拟器。**
-
-[English](README.md) | [中文](README.zh-CN.md)
+# A Rust FC/NES emulator
 
 ![Rust](https://img.shields.io/badge/Rust-2024-b7410e?style=for-the-badge&logo=rust&logoColor=white)
 ![Status](https://img.shields.io/badge/status-stage%201%20WIP-f4b400?style=for-the-badge)
 ![Target](https://img.shields.io/badge/target-Super%20Mario%20Bros.-e52521?style=for-the-badge)
 ![Mapper](https://img.shields.io/badge/mapper-0%20%2F%20NROM-3366cc?style=for-the-badge)
 ![Tests](https://img.shields.io/badge/tests-74%20passing-2ea44f?style=for-the-badge)
+
+[English](README.md) | [中文](README.zh-CN.md)
 
 </div>
 
