@@ -10,7 +10,7 @@
 ![Status](https://img.shields.io/badge/status-stage%201%20WIP-f4b400?style=for-the-badge)
 ![Target](https://img.shields.io/badge/target-Super%20Mario%20Bros.-e52521?style=for-the-badge)
 ![Mapper](https://img.shields.io/badge/mapper-0%20%2F%20NROM-3366cc?style=for-the-badge)
-![Tests](https://img.shields.io/badge/tests-52%20passing-2ea44f?style=for-the-badge)
+![Tests](https://img.shields.io/badge/tests-74%20passing-2ea44f?style=for-the-badge)
 
 </div>
 
@@ -37,9 +37,10 @@ The codebase already contains the first pass of the emulator architecture:
 - Mapper 0 / NROM cartridge mapping.
 - CPU, PPU, APU, Bus, Input, Save State, Window, and App modules.
 - A `winit` + `pixels` desktop window path.
-- A `cpal` audio output path.
+- A `cpal` audio output path with basic pulse, triangle, and noise mixing.
 - Keyboard mapping for NES controls and emulator controls.
-- Unit tests for parser behavior, mapper behavior, CPU basics, bus routing, PPU state, controller reads, save-state validation, and app wiring.
+- Disk-backed save states in three slots under `saves/`.
+- Unit tests for parser behavior, mapper behavior, CPU behavior, bus routing, PPU rendering basics, controller reads, save-state persistence, and app/window wiring.
 
 This is still a work in progress. The current stage is for development and validation, not a polished general-purpose emulator release.
 
@@ -61,10 +62,10 @@ After the first target ROM works reliably, the project can expand toward broader
 - [x] Add initial save-state data structures and validation.
 - [x] Add a desktop window path using `winit` and `pixels`.
 - [x] Add a basic audio output path using `cpal`.
+- [x] Persist save states to disk across sessions.
 - [ ] Complete target-ROM CPU behavior and interrupt accuracy.
 - [ ] Complete PPU rendering behavior needed for correct gameplay.
 - [ ] Complete APU sound behavior and stable synchronization.
-- [ ] Persist save states to disk across sessions.
 - [ ] Finish pause/menu interactions and full gameplay validation.
 - [ ] Verify that the target ROM can be played end to end.
 
@@ -112,6 +113,8 @@ cargo run -- path/to/game.nes
 | Load State | F9 |
 | Select Slot | 1, 2, 3 |
 | Exit | Escape |
+
+Save states are written to the `saves/` directory and are keyed by ROM file name and slot number.
 
 ## Development
 

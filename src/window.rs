@@ -118,6 +118,9 @@ impl RuntimeApp {
         };
 
         self.app.tick();
+        if self.app.take_audio_reset_requested() {
+            self.audio.clear();
+        }
         self.audio.push_from_app(&mut self.app);
 
         let frame = pixels.frame_mut();
@@ -156,34 +159,15 @@ impl RuntimeApp {
     }
 
     fn handle_menu_click(&mut self, x: f64, y: f64, event_loop: &ActiveEventLoop) {
-        let scale = f64::from(self.config.scale);
-        let button = (x / (32.0 * scale)).floor() as u8;
-        if y > 24.0 * scale {
-            return;
-        }
-
-        let action = match button {
-            0 => Some(AppControlAction::SaveState),
-            1 => Some(AppControlAction::LoadState),
-            2 => {
-                self.app.reset();
-                None
+        match menu_command_at(x, y, self.config.scale) {
+            Some(MenuCommand::Action(action)) => {
+                if let Err(err) = self.app.handle_action(action) {
+                    warn!(%err, "menu action failed");
+                }
             }
-            3 => Some(AppControlAction::TogglePause),
-            4 => Some(AppControlAction::SelectSaveSlot(SaveSlot::Slot(1))),
-            5 => Some(AppControlAction::SelectSaveSlot(SaveSlot::Slot(2))),
-            6 => Some(AppControlAction::SelectSaveSlot(SaveSlot::Slot(3))),
-            7 => {
-                event_loop.exit();
-                None
-            }
-            _ => None,
-        };
-
-        if let Some(action) = action
-            && let Err(err) = self.app.handle_action(action)
-        {
-            warn!(%err, "menu action failed");
+            Some(MenuCommand::Reset) => self.app.reset(),
+            Some(MenuCommand::Exit) => event_loop.exit(),
+            None => {}
         }
     }
 }
@@ -280,6 +264,39 @@ fn map_key(key: KeyCode) -> Option<KeyboardKey> {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MenuCommand {
+    Action(AppControlAction),
+    Reset,
+    Exit,
+}
+
+fn menu_command_at(x: f64, y: f64, scale: u32) -> Option<MenuCommand> {
+    let scale = f64::from(scale);
+    if y > 24.0 * scale {
+        return None;
+    }
+
+    let button = (x / (32.0 * scale)).floor() as u8;
+    match button {
+        0 => Some(MenuCommand::Action(AppControlAction::SaveState)),
+        1 => Some(MenuCommand::Action(AppControlAction::LoadState)),
+        2 => Some(MenuCommand::Reset),
+        3 => Some(MenuCommand::Action(AppControlAction::TogglePause)),
+        4 => Some(MenuCommand::Action(AppControlAction::SelectSaveSlot(
+            SaveSlot::Slot(1),
+        ))),
+        5 => Some(MenuCommand::Action(AppControlAction::SelectSaveSlot(
+            SaveSlot::Slot(2),
+        ))),
+        6 => Some(MenuCommand::Action(AppControlAction::SelectSaveSlot(
+            SaveSlot::Slot(3),
+        ))),
+        7 => Some(MenuCommand::Exit),
+        _ => None,
+    }
+}
+
 struct AudioOutput {
     _stream: Option<Stream>,
     samples: Arc<Mutex<VecDeque<f32>>>,
@@ -362,6 +379,12 @@ impl AudioOutput {
             }
         }
     }
+
+    fn clear(&self) {
+        if let Ok(mut queue) = self.samples.lock() {
+            queue.clear();
+        }
+    }
 }
 
 fn write_audio_f32(data: &mut [f32], channels: usize, samples: &Arc<Mutex<VecDeque<f32>>>) {
@@ -442,5 +465,35 @@ mod tests {
         assert_eq!(map_key(KeyCode::F5), Some(KeyboardKey::F5));
         assert_eq!(map_key(KeyCode::Digit3), Some(KeyboardKey::Digit(3)));
         assert_eq!(map_key(KeyCode::Escape), None);
+    }
+
+    #[test]
+    fn maps_menu_coordinates_to_commands() {
+        let scale = DEFAULT_SCALE;
+        let scaled = |x| x * f64::from(scale);
+
+        assert_eq!(
+            menu_command_at(scaled(8.0), 8.0, scale),
+            Some(MenuCommand::Action(AppControlAction::SaveState))
+        );
+        assert_eq!(
+            menu_command_at(scaled(40.0), 8.0, scale),
+            Some(MenuCommand::Action(AppControlAction::LoadState))
+        );
+        assert_eq!(
+            menu_command_at(scaled(72.0), 8.0, scale),
+            Some(MenuCommand::Reset)
+        );
+        assert_eq!(
+            menu_command_at(scaled(136.0), 8.0, scale),
+            Some(MenuCommand::Action(AppControlAction::SelectSaveSlot(
+                SaveSlot::Slot(1),
+            )))
+        );
+        assert_eq!(
+            menu_command_at(scaled(232.0), 8.0, scale),
+            Some(MenuCommand::Exit)
+        );
+        assert_eq!(menu_command_at(8.0, scaled(25.0), scale), None);
     }
 }

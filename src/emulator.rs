@@ -2,6 +2,7 @@ use crate::{
     apu::Apu,
     bus::Bus,
     cpu::Cpu,
+    cpu::CpuState,
     input::{Button, Controller},
     mapper::from_rom,
     ppu::Ppu,
@@ -40,11 +41,12 @@ impl Emulator {
         for _ in 0..30_000 {
             let cycles = self.cpu.step(&mut self.bus);
             self.bus.step(cycles);
+            if self.bus.frame_ready() && !start_frame_ready {
+                self.bus.render_frame();
+                break;
+            }
             if self.bus.poll_nmi() {
                 self.cpu.nmi(&mut self.bus);
-            }
-            if self.bus.frame_ready() && !start_frame_ready {
-                break;
             }
         }
     }
@@ -75,6 +77,10 @@ impl Emulator {
     pub fn load_state(&mut self, state: &SaveState) {
         self.cpu.restore(&state.cpu);
         self.bus.restore(&state.bus, &state.ppu, &state.apu);
+    }
+
+    pub fn cpu_state(&self) -> CpuState {
+        self.cpu.snapshot()
     }
 }
 
@@ -123,5 +129,55 @@ mod tests {
             Emulator::new(rom, "Super Mario Bros. (Japan, USA).nes".to_string()).unwrap();
         emulator.step_frame();
         assert_eq!(emulator.frame_buffer().len(), crate::ppu::FRAMEBUFFER_SIZE);
+        assert!(!emulator.cpu_state().stopped);
+    }
+
+    #[test]
+    fn bundled_target_rom_runs_multiple_frames_without_stopping() {
+        let rom = Rom::from_path(crate::DEFAULT_ROM_PATH).unwrap();
+        let mut emulator =
+            Emulator::new(rom, "Super Mario Bros. (Japan, USA).nes".to_string()).unwrap();
+
+        for _ in 0..120 {
+            emulator.step_frame();
+            assert!(!emulator.cpu_state().stopped);
+        }
+
+        let frame = emulator.frame_buffer();
+        assert_eq!(frame.len(), crate::ppu::FRAMEBUFFER_SIZE);
+        assert!(unique_colors(frame) > 8);
+    }
+
+    #[test]
+    fn bundled_target_rom_accepts_start_input_and_keeps_running() {
+        let rom = Rom::from_path(crate::DEFAULT_ROM_PATH).unwrap();
+        let mut emulator =
+            Emulator::new(rom, "Super Mario Bros. (Japan, USA).nes".to_string()).unwrap();
+
+        for _ in 0..90 {
+            emulator.step_frame();
+        }
+        emulator.set_button(Button::Start, true);
+        for _ in 0..8 {
+            emulator.step_frame();
+        }
+        emulator.set_button(Button::Start, false);
+        for _ in 0..120 {
+            emulator.step_frame();
+            assert!(!emulator.cpu_state().stopped);
+        }
+
+        assert!(unique_colors(emulator.frame_buffer()) > 8);
+    }
+
+    fn unique_colors(frame: &[u8]) -> usize {
+        let mut colors: Vec<[u8; 4]> = Vec::new();
+        for pixel in frame.chunks_exact(4) {
+            let color = [pixel[0], pixel[1], pixel[2], pixel[3]];
+            if !colors.contains(&color) {
+                colors.push(color);
+            }
+        }
+        colors.len()
     }
 }

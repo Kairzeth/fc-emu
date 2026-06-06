@@ -1,4 +1,5 @@
 use crate::bus::Bus;
+use serde::{Deserialize, Serialize};
 
 pub mod status {
     pub const CARRY: u8 = 0x01;
@@ -1121,7 +1122,7 @@ impl Cpu {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CpuState {
     pub a: u8,
     pub x: u8,

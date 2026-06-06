@@ -10,7 +10,7 @@
 ![Status](https://img.shields.io/badge/status-stage%201%20WIP-f4b400?style=for-the-badge)
 ![Target](https://img.shields.io/badge/target-Super%20Mario%20Bros.-e52521?style=for-the-badge)
 ![Mapper](https://img.shields.io/badge/mapper-0%20%2F%20NROM-3366cc?style=for-the-badge)
-![Tests](https://img.shields.io/badge/tests-52%20passing-2ea44f?style=for-the-badge)
+![Tests](https://img.shields.io/badge/tests-74%20passing-2ea44f?style=for-the-badge)
 
 </div>
 
@@ -37,9 +37,10 @@
 - Mapper 0 / NROM 卡带映射。
 - CPU、PPU、APU、Bus、Input、Save State、Window、App 等模块。
 - 基于 `winit` + `pixels` 的桌面窗口路径。
-- 基于 `cpal` 的音频输出路径。
+- 基于 `cpal` 的音频输出路径，包含基础 pulse、triangle、noise 混音。
 - FC/NES 手柄按键与模拟器控制快捷键映射。
-- 覆盖 ROM 解析、Mapper、CPU 基础行为、Bus 路由、PPU 状态、手柄读取、存档校验和 App 组装的单元测试。
+- 支持写入 `saves/` 目录的 3 槽位磁盘即时存档。
+- 覆盖 ROM 解析、Mapper、CPU 行为、Bus 路由、PPU 基础渲染、手柄读取、存档持久化以及 App/Window 组装的单元测试。
 
 项目仍在开发中。当前版本适合继续实现与验证，不是已经打磨完成的通用模拟器发布版。
 
@@ -61,10 +62,10 @@
 - [x] 添加即时存档数据结构和校验逻辑。
 - [x] 添加基于 `winit` 和 `pixels` 的桌面窗口路径。
 - [x] 添加基于 `cpal` 的基础音频输出路径。
+- [x] 将即时存档持久化到磁盘。
 - [ ] 补全目标 ROM 所需的 CPU 行为和中断精度。
 - [ ] 补全正确游玩所需的 PPU 渲染行为。
 - [ ] 补全 APU 声音行为和稳定同步。
-- [ ] 将即时存档持久化到磁盘。
 - [ ] 完成暂停、菜单交互和完整游玩验收。
 - [ ] 验证目标 ROM 可以完整游玩。
 
@@ -112,6 +113,8 @@ cargo run -- path/to/game.nes
 | 读取即时存档 | F9 |
 | 选择存档槽 | 1、2、3 |
 | 退出 | Escape |
+
+即时存档会写入 `saves/` 目录，并按 ROM 文件名和槽位编号区分。
 
 ## 开发
 

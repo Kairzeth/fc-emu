@@ -2,7 +2,9 @@ use crate::{
     emulator::Emulator,
     input::{AppControlAction, Button, KeyMapping, KeyboardKey, SaveSlot, default_key_mapping},
     rom::Rom,
-    save_state::{SaveState, validate_slot},
+    save_state::{
+        SaveState, read_state, save_path_for_rom, validate_slot, validate_state, write_state,
+    },
     window,
 };
 use anyhow::{Context, Result, anyhow};
@@ -16,6 +18,7 @@ pub struct App {
     current_slot: u8,
     last_state: Option<SaveState>,
     should_exit: bool,
+    audio_reset_requested: bool,
 }
 
 impl App {
@@ -48,6 +51,7 @@ impl App {
             current_slot: 1,
             last_state: None,
             should_exit: false,
+            audio_reset_requested: false,
         })
     }
 
@@ -66,8 +70,8 @@ impl App {
             AppControlAction::Pause => self.paused = true,
             AppControlAction::Resume => self.paused = false,
             AppControlAction::TogglePause => self.paused = !self.paused,
-            AppControlAction::SaveState => self.save_current_state(),
-            AppControlAction::LoadState => self.load_current_state(),
+            AppControlAction::SaveState => self.save_current_state()?,
+            AppControlAction::LoadState => self.load_current_state()?,
             AppControlAction::SelectSaveSlot(SaveSlot::Slot(slot)) => {
                 validate_slot(slot)?;
                 self.current_slot = slot;
@@ -87,18 +91,29 @@ impl App {
 
     pub fn reset(&mut self) {
         self.emulator.reset();
+        self.audio_reset_requested = true;
     }
 
-    pub fn save_current_state(&mut self) {
-        self.last_state = Some(self.emulator.save_state());
-        info!(slot = self.current_slot, "saved in-memory state");
+    pub fn save_current_state(&mut self) -> Result<()> {
+        let state = self.emulator.save_state();
+        let path = save_path_for_rom(&self.rom_path, self.current_slot)?;
+        write_state(&path, &state)
+            .with_context(|| format!("failed to save state to '{}'", path.display()))?;
+        self.last_state = Some(state);
+        info!(slot = self.current_slot, path = %path.display(), "saved state");
+        Ok(())
     }
 
-    pub fn load_current_state(&mut self) {
-        if let Some(state) = &self.last_state {
-            self.emulator.load_state(state);
-            info!(slot = self.current_slot, "loaded in-memory state");
-        }
+    pub fn load_current_state(&mut self) -> Result<()> {
+        let path = save_path_for_rom(&self.rom_path, self.current_slot)?;
+        let state = read_state(&path)
+            .with_context(|| format!("failed to load state from '{}'", path.display()))?;
+        validate_state(&state, &self.rom_name())?;
+        self.emulator.load_state(&state);
+        self.last_state = Some(state);
+        self.audio_reset_requested = true;
+        info!(slot = self.current_slot, path = %path.display(), "loaded state");
+        Ok(())
     }
 
     pub fn set_button(&mut self, button: Button, pressed: bool) {
@@ -138,6 +153,14 @@ impl App {
         &self.rom_path
     }
 
+    fn rom_name(&self) -> String {
+        self.rom_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("rom")
+            .to_string()
+    }
+
     pub fn should_exit(&self) -> bool {
         self.should_exit
     }
@@ -145,12 +168,22 @@ impl App {
     pub fn request_exit(&mut self) {
         self.should_exit = true;
     }
+
+    pub fn take_audio_reset_requested(&mut self) -> bool {
+        let requested = self.audio_reset_requested;
+        self.audio_reset_requested = false;
+        requested
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::input::AppControlAction;
+    use crate::input::{AppControlAction, KeyboardKey};
+    use crate::save_state::{read_state, save_path_for_rom};
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn rejects_missing_rom_with_clear_message() {
@@ -176,5 +209,92 @@ mod tests {
             app.handle_action(AppControlAction::SelectSaveSlot(SaveSlot::Slot(4)))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn reset_requests_audio_queue_clear_once() {
+        let mut app = App::new(crate::DEFAULT_ROM_PATH).unwrap();
+
+        app.reset();
+
+        assert!(app.take_audio_reset_requested());
+        assert!(!app.take_audio_reset_requested());
+    }
+
+    #[test]
+    fn save_action_writes_current_slot_to_disk() {
+        let temp_rom = temp_rom_copy();
+        let mut app = App::new(&temp_rom).unwrap();
+        app.handle_action(AppControlAction::SelectSaveSlot(SaveSlot::Slot(2)))
+            .unwrap();
+        let path = save_path_for_rom(app.rom_path(), app.current_slot()).unwrap();
+        let _ = fs::remove_file(&path);
+
+        app.handle_action(AppControlAction::SaveState).unwrap();
+
+        let state = read_state(&path).unwrap();
+        assert_eq!(
+            state.rom_name,
+            temp_rom.file_name().unwrap().to_string_lossy()
+        );
+        cleanup_temp_rom_and_save(temp_rom, path);
+    }
+
+    #[test]
+    fn load_action_reports_missing_slot_file() {
+        let temp_rom = temp_rom_copy();
+        let mut app = App::new(&temp_rom).unwrap();
+        app.handle_action(AppControlAction::SelectSaveSlot(SaveSlot::Slot(3)))
+            .unwrap();
+        let path = save_path_for_rom(app.rom_path(), app.current_slot()).unwrap();
+        let _ = fs::remove_file(&path);
+
+        let err = app
+            .handle_action(AppControlAction::LoadState)
+            .err()
+            .unwrap();
+        let error_chain = format!("{err:#}");
+
+        assert!(error_chain.contains("failed to load state"));
+        assert!(error_chain.contains("does not exist"));
+        cleanup_temp_rom_and_save(temp_rom, path);
+    }
+
+    #[test]
+    fn f5_and_f9_use_current_disk_save_slot() {
+        let temp_rom = temp_rom_copy();
+        let mut app = App::new(&temp_rom).unwrap();
+        app.handle_key(KeyboardKey::Digit(1), true).unwrap();
+        let path = save_path_for_rom(app.rom_path(), app.current_slot()).unwrap();
+        let _ = fs::remove_file(&path);
+
+        app.tick();
+        app.handle_key(KeyboardKey::F5, true).unwrap();
+        let saved = read_state(&path).unwrap();
+        app.tick();
+        app.handle_key(KeyboardKey::F9, true).unwrap();
+
+        assert_eq!(app.last_state.as_ref(), Some(&saved));
+        assert!(app.take_audio_reset_requested());
+        cleanup_temp_rom_and_save(temp_rom, path);
+    }
+
+    fn temp_rom_copy() -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("fc-emu-app-test-{unique}"));
+        fs::create_dir_all(&dir).unwrap();
+        let rom = dir.join(format!("test-rom-{unique}.nes"));
+        fs::copy(crate::DEFAULT_ROM_PATH, &rom).unwrap();
+        rom
+    }
+
+    fn cleanup_temp_rom_and_save(rom: PathBuf, save: PathBuf) {
+        let _ = fs::remove_file(save);
+        if let Some(parent) = rom.parent() {
+            let _ = fs::remove_dir_all(parent);
+        }
     }
 }

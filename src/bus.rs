@@ -4,6 +4,7 @@ use crate::{
     mapper::Mapper,
     ppu::{Ppu, PpuState},
 };
+use serde::{Deserialize, Serialize};
 
 pub const CPU_RAM_SIZE: usize = 0x0800;
 pub const OAM_DMA_SIZE: usize = 256;
@@ -13,14 +14,14 @@ pub trait MapperBusDevice {
     fn cpu_write(&mut self, addr: u16, value: u8) -> bool;
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct OamDmaState {
     pub last_page: Option<u8>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BusState {
-    pub cpu_ram: [u8; CPU_RAM_SIZE],
+    pub cpu_ram: Vec<u8>,
     pub controller1: Controller,
     pub oam_dma: OamDmaState,
 }
@@ -84,6 +85,10 @@ impl Bus {
         self.apu.step(cpu_cycles);
     }
 
+    pub fn render_frame(&mut self) {
+        self.ppu.render_frame(self.mapper.as_ref());
+    }
+
     pub fn poll_nmi(&mut self) -> bool {
         self.ppu.poll_nmi()
     }
@@ -114,7 +119,7 @@ impl Bus {
 
     pub fn snapshot(&self) -> BusState {
         BusState {
-            cpu_ram: self.cpu_ram,
+            cpu_ram: self.cpu_ram.to_vec(),
             controller1: self.controller1.clone(),
             oam_dma: self.oam_dma,
         }
@@ -129,7 +134,9 @@ impl Bus {
     }
 
     pub fn restore(&mut self, bus: &BusState, ppu: &PpuState, apu: &ApuState) {
-        self.cpu_ram = bus.cpu_ram;
+        self.cpu_ram = [0; CPU_RAM_SIZE];
+        let len = bus.cpu_ram.len().min(CPU_RAM_SIZE);
+        self.cpu_ram[..len].copy_from_slice(&bus.cpu_ram[..len]);
         self.controller1 = bus.controller1.clone();
         self.oam_dma = bus.oam_dma;
         self.ppu.restore(ppu);
