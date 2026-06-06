@@ -7,3 +7,6 @@
 
 # Runtime save-state files.
 /saves/
+
+# Local planning and task notes.
+/doc/
