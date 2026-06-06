@@ -1,0 +1,9 @@
+/target/
+.DS_Store
+*.log
+
+# Local ROM images are development inputs and should not be committed.
+/rom/*.nes
+
+# Runtime save-state files.
+/saves/
