@@ -1,10 +1,33 @@
+<div align="center">
+
 # fc-emu
 
-[English](README.md) | 中文
+**一个从首个可玩目标开始向外生长的 Rust FC/NES 模拟器。**
+
+[English](README.md) | [中文](README.zh-CN.md)
+
+![Rust](https://img.shields.io/badge/Rust-2024-b7410e?style=for-the-badge&logo=rust&logoColor=white)
+![Status](https://img.shields.io/badge/status-stage%201%20WIP-f4b400?style=for-the-badge)
+![Target](https://img.shields.io/badge/target-Super%20Mario%20Bros.-e52521?style=for-the-badge)
+![Mapper](https://img.shields.io/badge/mapper-0%20%2F%20NROM-3366cc?style=for-the-badge)
+![Tests](https://img.shields.io/badge/tests-52%20passing-2ea44f?style=for-the-badge)
+
+</div>
 
 `fc-emu` 是一个使用 Rust 开发的 FC/NES 模拟器项目。第一阶段聚焦一个明确目标：加载本地的 `Super Mario Bros. (Japan, USA).nes` ROM，打开桌面窗口，并逐步实现画面、键盘输入、声音、暂停和即时存档，最终达到可以完整游玩《Super Mario Bros.》的程度。
 
 项目当前刻意保持范围收敛。第一阶段不追求完整通用的 FC/NES 兼容性，而是先围绕目标 ROM 搭建清晰、可测试、可扩展的模拟器核心，再在后续阶段扩展更多 Mapper、渲染精度、音频精度、调试工具和兼容性。
+
+## 项目速览
+
+| 领域 | 当前选择 |
+| --- | --- |
+| 语言 | Rust 2024 |
+| 第一目标 | `Super Mario Bros. (Japan, USA).nes` |
+| 卡带范围 | 优先支持 Mapper 0 / NROM |
+| 窗口方案 | `winit` + `pixels` |
+| 音频方案 | `cpal` |
+| 测试方式 | Rust 单元测试 |
 
 ## 当前状态
 

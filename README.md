@@ -1,10 +1,33 @@
+<div align="center">
+
 # fc-emu
 
-English | [中文](README.zh-CN.md)
+**A Rust FC/NES emulator, built from the first playable target outward.**
+
+[English](README.md) | [中文](README.zh-CN.md)
+
+![Rust](https://img.shields.io/badge/Rust-2024-b7410e?style=for-the-badge&logo=rust&logoColor=white)
+![Status](https://img.shields.io/badge/status-stage%201%20WIP-f4b400?style=for-the-badge)
+![Target](https://img.shields.io/badge/target-Super%20Mario%20Bros.-e52521?style=for-the-badge)
+![Mapper](https://img.shields.io/badge/mapper-0%20%2F%20NROM-3366cc?style=for-the-badge)
+![Tests](https://img.shields.io/badge/tests-52%20passing-2ea44f?style=for-the-badge)
+
+</div>
 
 `fc-emu` is a Rust-based FC/NES emulator project. The first development stage focuses on one practical target: loading the local `Super Mario Bros. (Japan, USA).nes` ROM, opening a desktop window, and growing the emulator until the game can be played end to end with video, keyboard input, audio, pause, and save-state support.
 
 The project is intentionally scoped. It does not try to be a full, highly compatible NES emulator in the first stage. Instead, it builds the core pieces around the target ROM first, keeps module boundaries clear, and leaves room to expand mapper support, rendering accuracy, audio accuracy, debugging tools, and compatibility later.
+
+## Project Snapshot
+
+| Area | Choice |
+| --- | --- |
+| Language | Rust 2024 |
+| First target | `Super Mario Bros. (Japan, USA).nes` |
+| Cartridge scope | Mapper 0 / NROM first |
+| Window stack | `winit` + `pixels` |
+| Audio stack | `cpal` |
+| Testing | Rust unit tests |
 
 ## Current Status
 
