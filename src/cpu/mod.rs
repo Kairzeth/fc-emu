@@ -1,15 +1,16 @@
 use crate::bus::Bus;
 use serde::{Deserialize, Serialize};
 
-pub mod status {
-    pub const CARRY: u8 = 0x01;
-    pub const ZERO: u8 = 0x02;
-    pub const IRQ_DISABLE: u8 = 0x04;
-    pub const DECIMAL: u8 = 0x08;
-    pub const BREAK: u8 = 0x10;
-    pub const UNUSED: u8 = 0x20;
-    pub const OVERFLOW: u8 = 0x40;
-    pub const NEGATIVE: u8 = 0x80;
+pub mod addressing;
+pub mod opcode;
+pub mod status;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum InterruptRequest {
+    #[default]
+    None,
+    Nmi,
+    Irq,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -21,6 +22,7 @@ pub struct Cpu {
     pub sp: u8,
     pub status: u8,
     pub cycles: u64,
+    interrupt_request: InterruptRequest,
     stopped: bool,
 }
 
@@ -34,6 +36,7 @@ impl Default for Cpu {
             sp: 0xfd,
             status: status::IRQ_DISABLE | status::UNUSED,
             cycles: 0,
+            interrupt_request: InterruptRequest::None,
             stopped: false,
         }
     }
@@ -46,17 +49,29 @@ impl Cpu {
         self.pc = (hi << 8) | lo;
         self.sp = 0xfd;
         self.status = status::IRQ_DISABLE | status::UNUSED;
+        self.interrupt_request = InterruptRequest::None;
         self.stopped = false;
         self.cycles += 7;
     }
 
     pub fn step(&mut self, bus: &mut Bus) -> u8 {
+        if let Some(cycles) = self.service_interrupt(bus) {
+            return cycles;
+        }
+
         if self.stopped {
             self.cycles += 2;
             return 2;
         }
 
         let opcode = self.fetch_byte(bus);
+        let Some(instruction) = opcode::decode(opcode) else {
+            eprintln!("unimplemented opcode ${opcode:02X} at ${:04X}", self.pc - 1);
+            self.stopped = true;
+            self.cycles += 2;
+            return 2;
+        };
+
         let cycles = match opcode {
             0x00 => {
                 self.brk(bus);
@@ -805,7 +820,11 @@ impl Cpu {
             0x50 => self.branch(bus, self.status & status::OVERFLOW == 0),
             0x70 => self.branch(bus, self.status & status::OVERFLOW != 0),
             other => {
-                eprintln!("unimplemented opcode ${other:02X} at ${:04X}", self.pc - 1);
+                eprintln!(
+                    "opcode table mismatch for {} (${other:02X}) at ${:04X}",
+                    instruction.mnemonic,
+                    self.pc - 1
+                );
                 self.stopped = true;
                 2
             }
@@ -836,6 +855,33 @@ impl Cpu {
         }
     }
 
+    pub fn request_nmi(&mut self) {
+        self.interrupt_request = InterruptRequest::Nmi;
+    }
+
+    pub fn request_irq(&mut self) {
+        if self.interrupt_request != InterruptRequest::Nmi {
+            self.interrupt_request = InterruptRequest::Irq;
+        }
+    }
+
+    fn service_interrupt(&mut self, bus: &mut Bus) -> Option<u8> {
+        match self.interrupt_request {
+            InterruptRequest::None => None,
+            InterruptRequest::Nmi => {
+                self.interrupt_request = InterruptRequest::None;
+                self.nmi(bus);
+                Some(7)
+            }
+            InterruptRequest::Irq if self.status & status::IRQ_DISABLE == 0 => {
+                self.interrupt_request = InterruptRequest::None;
+                self.irq(bus);
+                Some(7)
+            }
+            InterruptRequest::Irq => None,
+        }
+    }
+
     pub fn snapshot(&self) -> CpuState {
         CpuState {
             a: self.a,
@@ -845,6 +891,7 @@ impl Cpu {
             sp: self.sp,
             status: self.status,
             cycles: self.cycles,
+            interrupt_request: self.interrupt_request,
             stopped: self.stopped,
         }
     }
@@ -857,6 +904,7 @@ impl Cpu {
         self.sp = state.sp;
         self.status = state.status;
         self.cycles = state.cycles;
+        self.interrupt_request = state.interrupt_request;
         self.stopped = state.stopped;
     }
 
@@ -1131,6 +1179,7 @@ pub struct CpuState {
     pub sp: u8,
     pub status: u8,
     pub cycles: u64,
+    pub interrupt_request: InterruptRequest,
     pub stopped: bool,
 }
 
@@ -1227,5 +1276,47 @@ mod tests {
         cpu.nmi(&mut bus);
         assert_eq!(cpu.pc, 0x1234);
         assert!(cpu.sp < 0xfd);
+    }
+
+    #[test]
+    fn requested_nmi_is_serviced_before_next_instruction() {
+        let mut prg = vec![0xea; 0x8000];
+        prg[0x7ffa] = 0x78;
+        prg[0x7ffb] = 0x56;
+        prg[0x7ffc] = 0x00;
+        prg[0x7ffd] = 0x80;
+        let mut bus = bus_with_prg(prg);
+        let mut cpu = Cpu::default();
+        cpu.reset(&mut bus);
+
+        cpu.request_nmi();
+        let cycles = cpu.step(&mut bus);
+
+        assert_eq!(cycles, 7);
+        assert_eq!(cpu.pc, 0x5678);
+        assert_eq!(cpu.snapshot().interrupt_request, InterruptRequest::None);
+    }
+
+    #[test]
+    fn requested_irq_waits_until_interrupts_are_enabled() {
+        let mut prg = vec![0xea; 0x8000];
+        prg[0x7ffc] = 0x00;
+        prg[0x7ffd] = 0x80;
+        prg[0x7ffe] = 0xbc;
+        prg[0x7fff] = 0x9a;
+        let mut bus = bus_with_prg(prg);
+        let mut cpu = Cpu::default();
+        cpu.reset(&mut bus);
+
+        cpu.request_irq();
+        cpu.step(&mut bus);
+        assert_eq!(cpu.pc, 0x8001);
+        assert_eq!(cpu.snapshot().interrupt_request, InterruptRequest::Irq);
+
+        cpu.status &= !status::IRQ_DISABLE;
+        cpu.step(&mut bus);
+
+        assert_eq!(cpu.pc, 0x9abc);
+        assert_eq!(cpu.snapshot().interrupt_request, InterruptRequest::None);
     }
 }

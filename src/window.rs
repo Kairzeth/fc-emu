@@ -11,20 +11,22 @@ use pixels::{Pixels, SurfaceTexture};
 use std::{
     collections::VecDeque,
     sync::{Arc, Mutex},
+    time::{Duration, Instant},
 };
 use tracing::{error, info, warn};
 use winit::{
     application::ApplicationHandler,
     dpi::LogicalSize,
-    event::{ElementState, WindowEvent},
+    event::{ElementState, KeyEvent, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
-    keyboard::{KeyCode, PhysicalKey},
+    keyboard::{Key, KeyCode, NamedKey, PhysicalKey},
     window::{Window, WindowId},
 };
 
 pub const NES_WIDTH: u32 = 256;
 pub const NES_HEIGHT: u32 = 240;
 pub const DEFAULT_SCALE: u32 = 3;
+const TARGET_FRAME_TIME: Duration = Duration::from_micros(16_667);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WindowConfig {
@@ -60,6 +62,7 @@ pub fn run(app: App) -> Result<()> {
         window: None,
         pixels: None,
         audio,
+        next_frame_at: Instant::now(),
     };
 
     event_loop
@@ -73,6 +76,7 @@ struct RuntimeApp {
     window: Option<Arc<Window>>,
     pixels: Option<Pixels<'static>>,
     audio: AudioOutput,
+    next_frame_at: Instant,
 }
 
 impl RuntimeApp {
@@ -94,6 +98,8 @@ impl RuntimeApp {
                 .create_window(attrs)
                 .context("failed to create application window")?,
         );
+        window.set_ime_allowed(false);
+        window.focus_window();
         let size = window.inner_size();
         let surface = SurfaceTexture::new(size.width.max(1), size.height.max(1), window.clone());
         let pixels = Pixels::new(NES_WIDTH, NES_HEIGHT, surface)
@@ -106,6 +112,7 @@ impl RuntimeApp {
         );
         self.pixels = Some(pixels);
         self.window = Some(window);
+        self.next_frame_at = Instant::now();
         Ok(())
     }
 
@@ -116,6 +123,14 @@ impl RuntimeApp {
         let Some(pixels) = self.pixels.as_mut() else {
             return;
         };
+
+        let now = Instant::now();
+        if now < self.next_frame_at {
+            event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_frame_at));
+            return;
+        }
+        self.next_frame_at = now + TARGET_FRAME_TIME;
+        event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_frame_at));
 
         self.app.tick();
         if self.app.take_audio_reset_requested() {
@@ -144,14 +159,14 @@ impl RuntimeApp {
         }
     }
 
-    fn handle_keyboard(&mut self, key: KeyCode, state: ElementState, event_loop: &ActiveEventLoop) {
-        let pressed = state == ElementState::Pressed;
-        if key == KeyCode::Escape && pressed {
+    fn handle_keyboard(&mut self, event: &KeyEvent, event_loop: &ActiveEventLoop) {
+        let pressed = event.state == ElementState::Pressed;
+        if is_escape_key(event) && pressed {
             event_loop.exit();
             return;
         }
 
-        if let Some(mapped) = map_key(key)
+        if let Some(mapped) = map_key_event(event)
             && let Err(err) = self.app.handle_key(mapped, pressed)
         {
             warn!(%err, "keyboard action failed");
@@ -208,10 +223,8 @@ impl ApplicationHandler for RuntimeApp {
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => {
-                if !event.repeat
-                    && let PhysicalKey::Code(key) = event.physical_key
-                {
-                    self.handle_keyboard(key, event.state, event_loop);
+                if !event.repeat {
+                    self.handle_keyboard(&event, event_loop);
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
@@ -251,8 +264,10 @@ fn map_key(key: KeyCode) -> Option<KeyboardKey> {
         KeyCode::ArrowRight => Some(KeyboardKey::ArrowRight),
         KeyCode::KeyX => Some(KeyboardKey::X),
         KeyCode::KeyZ => Some(KeyboardKey::Z),
+        KeyCode::KeyS => Some(KeyboardKey::S),
         KeyCode::Enter | KeyCode::NumpadEnter => Some(KeyboardKey::Enter),
         KeyCode::ShiftRight => Some(KeyboardKey::RightShift),
+        KeyCode::Tab => Some(KeyboardKey::Tab),
         KeyCode::Space => Some(KeyboardKey::Space),
         KeyCode::KeyP => Some(KeyboardKey::P),
         KeyCode::F5 => Some(KeyboardKey::F5),
@@ -262,6 +277,45 @@ fn map_key(key: KeyCode) -> Option<KeyboardKey> {
         KeyCode::Digit3 => Some(KeyboardKey::Digit(3)),
         _ => None,
     }
+}
+
+fn map_key_event(event: &KeyEvent) -> Option<KeyboardKey> {
+    if let PhysicalKey::Code(key) = event.physical_key
+        && let Some(mapped) = map_key(key)
+    {
+        return Some(mapped);
+    }
+
+    match &event.logical_key {
+        Key::Named(NamedKey::ArrowUp) => Some(KeyboardKey::ArrowUp),
+        Key::Named(NamedKey::ArrowDown) => Some(KeyboardKey::ArrowDown),
+        Key::Named(NamedKey::ArrowLeft) => Some(KeyboardKey::ArrowLeft),
+        Key::Named(NamedKey::ArrowRight) => Some(KeyboardKey::ArrowRight),
+        Key::Named(NamedKey::Enter) => Some(KeyboardKey::Enter),
+        Key::Named(NamedKey::Space) => Some(KeyboardKey::Space),
+        Key::Named(NamedKey::F5) => Some(KeyboardKey::F5),
+        Key::Named(NamedKey::F9) => Some(KeyboardKey::F9),
+        Key::Character(text) => map_character_key(text.as_str()),
+        _ => None,
+    }
+}
+
+fn map_character_key(text: &str) -> Option<KeyboardKey> {
+    match text {
+        "x" | "X" => Some(KeyboardKey::X),
+        "z" | "Z" => Some(KeyboardKey::Z),
+        "s" | "S" => Some(KeyboardKey::S),
+        "p" | "P" => Some(KeyboardKey::P),
+        "1" => Some(KeyboardKey::Digit(1)),
+        "2" => Some(KeyboardKey::Digit(2)),
+        "3" => Some(KeyboardKey::Digit(3)),
+        _ => None,
+    }
+}
+
+fn is_escape_key(event: &KeyEvent) -> bool {
+    matches!(event.physical_key, PhysicalKey::Code(KeyCode::Escape))
+        || matches!(event.logical_key, Key::Named(NamedKey::Escape))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -372,10 +426,15 @@ impl AudioOutput {
         }
 
         if let Ok(mut queue) = self.samples.lock() {
+            let max_queue = 4096;
+            while queue.len() > max_queue {
+                queue.pop_front();
+            }
             for sample in drained {
-                if queue.len() < 16_384 {
-                    queue.push_back(sample.clamp(-1.0, 1.0));
+                if queue.len() >= max_queue {
+                    queue.pop_front();
                 }
+                queue.push_back(sample.clamp(-1.0, 1.0));
             }
         }
     }
@@ -440,6 +499,20 @@ fn draw_menu_overlay(frame: &mut [u8], current_slot: u8, paused: bool) {
             }
         }
     }
+
+    let labels = [
+        "SAV",
+        "LOD",
+        "RST",
+        if paused { "RUN" } else { "PAU" },
+        "1",
+        "2",
+        "3",
+        "X",
+    ];
+    for (button, label) in labels.iter().enumerate() {
+        draw_menu_label(frame, button * BUTTON_WIDTH, BUTTON_WIDTH, label);
+    }
 }
 
 fn slot_color(current_slot: u8, slot: u8) -> [u8; 4] {
@@ -447,6 +520,70 @@ fn slot_color(current_slot: u8, slot: u8) -> [u8; 4] {
         [200, 184, 64, 255]
     } else {
         [86, 92, 104, 255]
+    }
+}
+
+fn draw_menu_label(frame: &mut [u8], button_x: usize, button_width: usize, text: &str) {
+    const SCALE: usize = 2;
+    const GLYPH_WIDTH: usize = 3;
+    const SPACING: usize = 1;
+
+    let glyphs = text.chars().count();
+    let text_width = if glyphs == 0 {
+        0
+    } else {
+        (glyphs * GLYPH_WIDTH + (glyphs - 1) * SPACING) * SCALE
+    };
+    let mut x = button_x + button_width.saturating_sub(text_width) / 2;
+    let y = 7;
+
+    for ch in text.chars() {
+        draw_glyph(frame, x, y, SCALE, ch);
+        x += (GLYPH_WIDTH + SPACING) * SCALE;
+    }
+}
+
+fn draw_glyph(frame: &mut [u8], x: usize, y: usize, scale: usize, ch: char) {
+    let Some(rows) = glyph_rows(ch) else {
+        return;
+    };
+    let width = NES_WIDTH as usize;
+    let color = [244, 244, 236, 255];
+
+    for (row, bits) in rows.iter().enumerate() {
+        for col in 0..3 {
+            if bits & (1 << (2 - col)) == 0 {
+                continue;
+            }
+            for dy in 0..scale {
+                for dx in 0..scale {
+                    let px = x + col * scale + dx;
+                    let py = y + row * scale + dy;
+                    let i = (py * width + px) * 4;
+                    frame[i..i + 4].copy_from_slice(&color);
+                }
+            }
+        }
+    }
+}
+
+fn glyph_rows(ch: char) -> Option<[u8; 5]> {
+    match ch {
+        '1' => Some([0b010, 0b110, 0b010, 0b010, 0b111]),
+        '2' => Some([0b111, 0b001, 0b111, 0b100, 0b111]),
+        '3' => Some([0b111, 0b001, 0b111, 0b001, 0b111]),
+        'A' => Some([0b010, 0b101, 0b111, 0b101, 0b101]),
+        'D' => Some([0b110, 0b101, 0b101, 0b101, 0b110]),
+        'L' => Some([0b100, 0b100, 0b100, 0b100, 0b111]),
+        'O' => Some([0b111, 0b101, 0b101, 0b101, 0b111]),
+        'P' => Some([0b110, 0b101, 0b110, 0b100, 0b100]),
+        'R' => Some([0b110, 0b101, 0b110, 0b101, 0b101]),
+        'S' => Some([0b111, 0b100, 0b111, 0b001, 0b111]),
+        'T' => Some([0b111, 0b010, 0b010, 0b010, 0b010]),
+        'U' => Some([0b101, 0b101, 0b101, 0b101, 0b111]),
+        'V' => Some([0b101, 0b101, 0b101, 0b101, 0b010]),
+        'X' => Some([0b101, 0b101, 0b010, 0b101, 0b101]),
+        _ => None,
     }
 }
 
@@ -462,6 +599,7 @@ mod tests {
     #[test]
     fn maps_winit_keys_to_project_keys() {
         assert_eq!(map_key(KeyCode::KeyX), Some(KeyboardKey::X));
+        assert_eq!(map_key(KeyCode::KeyS), Some(KeyboardKey::S));
         assert_eq!(map_key(KeyCode::F5), Some(KeyboardKey::F5));
         assert_eq!(map_key(KeyCode::Digit3), Some(KeyboardKey::Digit(3)));
         assert_eq!(map_key(KeyCode::Escape), None);

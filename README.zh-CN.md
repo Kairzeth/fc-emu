@@ -105,7 +105,7 @@ cargo run -- path/to/game.nes
 | A | X |
 | B | Z |
 | Start | Enter |
-| Select | Right Shift |
+| Select | Right Shift、S 或 Tab |
 | 暂停 / 恢复 | Space 或 P |
 | 保存即时存档 | F5 |
 | 读取即时存档 | F9 |
@@ -113,6 +113,11 @@ cargo run -- path/to/game.nes
 | 退出 | Escape |
 
 即时存档会写入 `saves/` 目录，并按 ROM 文件名和槽位编号区分。
+
+## 已知问题
+
+- 声音仍不正确，当前 APU 还不能还原《Super Mario Bros.》的原版音乐。
+- 顶出蘑菇后，蘑菇完全出现时画面仍可能卡死，后续需要继续修 PPU/CPU 时序相关问题。
 
 ## 开发
 

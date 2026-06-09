@@ -112,8 +112,9 @@ impl Ppu {
         }
     }
 
-    pub fn step(&mut self, cycles: usize) {
+    pub fn step(&mut self, cycles: usize, mapper: &dyn Mapper) {
         for _ in 0..cycles {
+            self.maybe_set_sprite_zero_hit(mapper);
             self.dot += 1;
             if self.dot >= 341 {
                 self.dot = 0;
@@ -401,6 +402,62 @@ impl Ppu {
         }
     }
 
+    fn maybe_set_sprite_zero_hit(&mut self, mapper: &dyn Mapper) {
+        if self.registers[2] & 0x40 != 0 || self.registers[1] & 0x18 != 0x18 {
+            return;
+        }
+        if !(0..HEIGHT as i16).contains(&self.scanline) || self.dot >= WIDTH as u16 {
+            return;
+        }
+
+        let x = usize::from(self.dot);
+        if x == 255 || x < 8 && (self.registers[1] & 0x06) != 0x06 {
+            return;
+        }
+
+        let sprite_height = if self.registers[0] & 0x20 != 0 { 16 } else { 8 };
+        let sprite_y = usize::from(self.oam[0]).wrapping_add(1);
+        let y = self.scanline as usize;
+        if y < sprite_y || y >= sprite_y + sprite_height {
+            return;
+        }
+
+        let sprite_x = usize::from(self.oam[3]);
+        if x < sprite_x || x >= sprite_x + 8 {
+            return;
+        }
+
+        let tile = u16::from(self.oam[1]);
+        let attr = self.oam[2];
+        let flip_h = attr & 0x40 != 0;
+        let flip_v = attr & 0x80 != 0;
+        let pattern_base = if self.registers[0] & 0x08 != 0 {
+            0x1000
+        } else {
+            0x0000
+        };
+        let row = y - sprite_y;
+        let col = x - sprite_x;
+        let fine_y = if flip_v { sprite_height - 1 - row } else { row };
+        let fine_x = if flip_h { col } else { 7 - col };
+        let pattern_addr = Self::sprite_pattern_addr(pattern_base, sprite_height, tile, fine_y);
+        let low = mapper.ppu_read(pattern_addr).unwrap_or(0);
+        let high = mapper.ppu_read(pattern_addr + 8).unwrap_or(0);
+        let sprite_color = ((low >> fine_x) & 1) | (((high >> fine_x) & 1) << 1);
+        if sprite_color == 0 {
+            return;
+        }
+
+        let background_pattern_base = if self.registers[0] & 0x10 != 0 {
+            0x1000
+        } else {
+            0x0000
+        };
+        if self.background_opaque_at(mapper, background_pattern_base, x, y) {
+            self.registers[2] |= 0x40;
+        }
+    }
+
     fn sprite_pattern_addr(
         pattern_base: u16,
         sprite_height: usize,
@@ -595,7 +652,8 @@ mod tests {
     #[test]
     fn raises_frame_ready_at_vblank() {
         let mut ppu = Ppu::new(Mirroring::Horizontal);
-        ppu.step(341 * 241);
+        let mapper = Mapper0::new(vec![0; 0x8000], vec![0; 0x2000], true);
+        ppu.step(341 * 241, &mapper);
         assert!(ppu.frame_ready());
         assert_eq!(ppu.take_frame().len(), FRAMEBUFFER_SIZE);
         assert!(!ppu.frame_ready());
@@ -785,6 +843,25 @@ mod tests {
         ppu.oam[3] = 0;
 
         ppu.render_frame(&mapper);
+
+        assert_ne!(ppu.registers[2] & 0x40, 0);
+    }
+
+    #[test]
+    fn sprite_zero_hit_is_set_during_visible_scanline() {
+        let mut chr = vec![0; 0x2000];
+        chr[16] = 0xff;
+        chr[17] = 0xff;
+        let mapper = Mapper0::new(vec![0; 0x8000], chr, true);
+        let mut ppu = Ppu::new(Mirroring::Horizontal);
+        ppu.registers[1] = 0x1e;
+        ppu.vram[0] = 1;
+        ppu.oam[0] = 0;
+        ppu.oam[1] = 1;
+        ppu.oam[2] = 0;
+        ppu.oam[3] = 0;
+
+        ppu.step(342, &mapper);
 
         assert_ne!(ppu.registers[2] & 0x40, 0);
     }

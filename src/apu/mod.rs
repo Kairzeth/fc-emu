@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
 
+pub mod channel;
+pub mod mixer;
+
 #[derive(Clone, Debug)]
 pub struct Apu {
     registers: [u8; 0x18],
@@ -10,6 +13,7 @@ pub struct Apu {
     triangle_phase: f32,
     noise_phase: f32,
     noise_shift: u16,
+    dmc_output: f32,
 }
 
 const CPU_CLOCK_HZ: f32 = 1_789_773.0;
@@ -31,6 +35,7 @@ impl Default for Apu {
             triangle_phase: 0.0,
             noise_phase: 0.0,
             noise_shift: 1,
+            dmc_output: 0.0,
         }
     }
 }
@@ -47,6 +52,9 @@ impl Apu {
     pub fn cpu_write_register(&mut self, addr: u16, value: u8) {
         if addr == 0x4015 {
             self.enabled = value & 0x1f;
+        }
+        if addr == 0x4011 {
+            self.dmc_output = (f32::from(value & 0x7f) / 127.0) * 2.0 - 1.0;
         }
         if (0x4000..=0x4017).contains(&addr) {
             self.registers[(addr - 0x4000) as usize] = value;
@@ -79,6 +87,7 @@ impl Apu {
             triangle_phase: self.triangle_phase,
             noise_phase: self.noise_phase,
             noise_shift: self.noise_shift,
+            dmc_output: self.dmc_output,
         }
     }
 
@@ -90,6 +99,7 @@ impl Apu {
         self.triangle_phase = state.triangle_phase;
         self.noise_phase = state.noise_phase;
         self.noise_shift = state.noise_shift;
+        self.dmc_output = state.dmc_output;
         self.samples.clear();
     }
 
@@ -98,7 +108,8 @@ impl Apu {
         let pulse_2 = self.pulse_sample(1);
         let triangle = self.triangle_sample();
         let noise = self.noise_sample();
-        (pulse_1 + pulse_2 + triangle + noise).clamp(-1.0, 1.0)
+        let dmc = self.dmc_sample();
+        mixer::mix([pulse_1, pulse_2, triangle, noise, dmc])
     }
 
     fn pulse_sample(&mut self, channel: usize) -> f32 {
@@ -176,6 +187,10 @@ impl Apu {
         }
     }
 
+    fn dmc_sample(&self) -> f32 {
+        self.dmc_output * 0.04
+    }
+
     fn timer(&self, low_register: usize, high_register: usize) -> u16 {
         u16::from(self.registers[low_register])
             | (u16::from(self.registers[high_register] & 0x07) << 8)
@@ -195,6 +210,7 @@ pub struct ApuState {
     pub triangle_phase: f32,
     pub noise_phase: f32,
     pub noise_shift: u16,
+    pub dmc_output: f32,
 }
 
 #[cfg(test)]
@@ -252,5 +268,21 @@ mod tests {
         let mut samples = Vec::new();
         apu.drain_samples(&mut samples);
         assert!(samples.iter().any(|sample| sample.abs() > 0.0));
+    }
+
+    #[test]
+    fn dmc_direct_load_contributes_small_bounded_output() {
+        let mut apu = Apu::default();
+        apu.cpu_write_register(0x4011, 0x7f);
+        apu.cpu_write_register(0x4015, 0x10);
+
+        for _ in 0..200 {
+            apu.step(16);
+        }
+
+        let mut samples = Vec::new();
+        apu.drain_samples(&mut samples);
+        assert!(samples.iter().any(|sample| *sample > 0.0));
+        assert!(samples.iter().all(|sample| (-1.0..=1.0).contains(sample)));
     }
 }

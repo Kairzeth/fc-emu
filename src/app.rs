@@ -279,6 +279,83 @@ mod tests {
         cleanup_temp_rom_and_save(temp_rom, path);
     }
 
+    #[test]
+    fn paused_tick_does_not_advance_frame_or_audio() {
+        let mut app = App::new(crate::DEFAULT_ROM_PATH).unwrap();
+        for _ in 0..20 {
+            app.tick();
+        }
+        let frame_before = app.frame_buffer().to_vec();
+        let mut audio_before = Vec::new();
+        app.drain_audio_samples(&mut audio_before);
+
+        app.handle_action(AppControlAction::Pause).unwrap();
+        for _ in 0..10 {
+            app.tick();
+        }
+
+        let mut audio_after = Vec::new();
+        app.drain_audio_samples(&mut audio_after);
+        assert_eq!(app.frame_buffer(), frame_before.as_slice());
+        assert!(audio_after.is_empty());
+    }
+
+    #[test]
+    fn target_rom_starts_accepts_controls_and_keeps_rendering() {
+        let mut app = App::new(crate::DEFAULT_ROM_PATH).unwrap();
+        for _ in 0..90 {
+            app.tick();
+        }
+
+        app.handle_key(KeyboardKey::Enter, true).unwrap();
+        for _ in 0..8 {
+            app.tick();
+        }
+        app.handle_key(KeyboardKey::Enter, false).unwrap();
+        app.handle_key(KeyboardKey::ArrowRight, true).unwrap();
+        app.handle_key(KeyboardKey::X, true).unwrap();
+        for _ in 0..120 {
+            app.tick();
+        }
+        app.handle_key(KeyboardKey::ArrowRight, false).unwrap();
+        app.handle_key(KeyboardKey::X, false).unwrap();
+
+        assert!(unique_colors(app.frame_buffer()) > 4);
+    }
+
+    #[test]
+    fn target_rom_f5_f9_loads_and_continues_rendering_after_start() {
+        let temp_rom = temp_rom_copy();
+        let mut app = App::new(&temp_rom).unwrap();
+        let path = save_path_for_rom(app.rom_path(), app.current_slot()).unwrap();
+        let _ = fs::remove_file(&path);
+
+        for _ in 0..90 {
+            app.tick();
+        }
+        app.handle_key(KeyboardKey::Enter, true).unwrap();
+        for _ in 0..8 {
+            app.tick();
+        }
+        app.handle_key(KeyboardKey::Enter, false).unwrap();
+        for _ in 0..120 {
+            app.tick();
+        }
+        app.handle_key(KeyboardKey::F5, true).unwrap();
+
+        for _ in 0..60 {
+            app.tick();
+        }
+        app.handle_key(KeyboardKey::F9, true).unwrap();
+        for _ in 0..60 {
+            app.tick();
+        }
+
+        assert!(unique_colors(app.frame_buffer()) > 4);
+        assert!(!app.paused());
+        cleanup_temp_rom_and_save(temp_rom, path);
+    }
+
     fn temp_rom_copy() -> PathBuf {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -296,5 +373,16 @@ mod tests {
         if let Some(parent) = rom.parent() {
             let _ = fs::remove_dir_all(parent);
         }
+    }
+
+    fn unique_colors(frame: &[u8]) -> usize {
+        let mut colors: Vec<[u8; 4]> = Vec::new();
+        for pixel in frame.chunks_exact(4) {
+            let color = [pixel[0], pixel[1], pixel[2], pixel[3]];
+            if !colors.contains(&color) {
+                colors.push(color);
+            }
+        }
+        colors.len()
     }
 }

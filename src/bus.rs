@@ -81,7 +81,8 @@ impl Bus {
     }
 
     pub fn step(&mut self, cpu_cycles: u8) {
-        self.ppu.step(usize::from(cpu_cycles) * 3);
+        self.ppu
+            .step(usize::from(cpu_cycles) * 3, self.mapper.as_ref());
         self.apu.step(cpu_cycles);
     }
 

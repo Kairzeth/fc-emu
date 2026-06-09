@@ -55,6 +55,8 @@ pub enum KeyboardKey {
     Z,
     Enter,
     RightShift,
+    S,
+    Tab,
     Space,
     P,
     F5,
@@ -144,7 +146,9 @@ pub fn default_key_mapping(key: KeyboardKey) -> Option<KeyMapping> {
         KeyboardKey::X => KeyMapping::Controller(Button::A),
         KeyboardKey::Z => KeyMapping::Controller(Button::B),
         KeyboardKey::Enter => KeyMapping::Controller(Button::Start),
-        KeyboardKey::RightShift => KeyMapping::Controller(Button::Select),
+        KeyboardKey::RightShift | KeyboardKey::S | KeyboardKey::Tab => {
+            KeyMapping::Controller(Button::Select)
+        }
         KeyboardKey::Space | KeyboardKey::P => KeyMapping::App(AppControlAction::TogglePause),
         KeyboardKey::F5 => KeyMapping::App(AppControlAction::SaveState),
         KeyboardKey::F9 => KeyMapping::App(AppControlAction::LoadState),
@@ -202,6 +206,12 @@ mod tests {
 
         assert!(controller.is_pressed(Button::A));
         assert!(!controller.is_pressed(Button::Start));
+
+        assert_eq!(controller.apply_key(KeyboardKey::S, true), None);
+        assert!(controller.is_pressed(Button::Select));
+        controller.set_button(Button::Select, false);
+        assert_eq!(controller.apply_key(KeyboardKey::Tab, true), None);
+        assert!(controller.is_pressed(Button::Select));
     }
 
     #[test]

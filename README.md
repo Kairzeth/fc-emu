@@ -105,7 +105,7 @@ cargo run -- path/to/game.nes
 | A | X |
 | B | Z |
 | Start | Enter |
-| Select | Right Shift |
+| Select | Right Shift, S, or Tab |
 | Pause / Resume | Space or P |
 | Save State | F5 |
 | Load State | F9 |
@@ -113,6 +113,11 @@ cargo run -- path/to/game.nes
 | Exit | Escape |
 
 Save states are written to the `saves/` directory and are keyed by ROM file name and slot number.
+
+## Known Issues
+
+- Audio is still incorrect; the current APU does not yet reproduce the original `Super Mario Bros.` music.
+- After a mushroom is bumped out, the video can still freeze once the mushroom fully appears. This needs further PPU/CPU timing work.
 
 ## Development
 

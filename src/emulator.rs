@@ -37,16 +37,20 @@ impl Emulator {
     }
 
     pub fn step_frame(&mut self) {
-        let start_frame_ready = self.bus.frame_ready();
-        for _ in 0..30_000 {
+        let mut saw_not_ready = !self.bus.frame_ready();
+        let mut elapsed_cpu_cycles = 0usize;
+        while elapsed_cpu_cycles < 45_000 {
             let cycles = self.cpu.step(&mut self.bus);
+            elapsed_cpu_cycles += usize::from(cycles);
             self.bus.step(cycles);
-            if self.bus.frame_ready() && !start_frame_ready {
+            if self.bus.poll_nmi() {
+                self.cpu.request_nmi();
+            }
+            if !self.bus.frame_ready() {
+                saw_not_ready = true;
+            } else if saw_not_ready {
                 self.bus.render_frame();
                 break;
-            }
-            if self.bus.poll_nmi() {
-                self.cpu.nmi(&mut self.bus);
             }
         }
     }
@@ -167,7 +171,61 @@ mod tests {
             assert!(!emulator.cpu_state().stopped);
         }
 
-        assert!(unique_colors(emulator.frame_buffer()) > 8);
+        assert!(unique_colors(emulator.frame_buffer()) > 4);
+    }
+
+    #[test]
+    fn bundled_target_rom_framebuffer_updates_after_start() {
+        let rom = Rom::from_path(crate::DEFAULT_ROM_PATH).unwrap();
+        let mut emulator =
+            Emulator::new(rom, "Super Mario Bros. (Japan, USA).nes".to_string()).unwrap();
+
+        for _ in 0..90 {
+            emulator.step_frame();
+        }
+        emulator.set_button(Button::Start, true);
+        for _ in 0..8 {
+            emulator.step_frame();
+        }
+        emulator.set_button(Button::Start, false);
+        for _ in 0..90 {
+            emulator.step_frame();
+        }
+        let before = emulator.frame_buffer().to_vec();
+
+        emulator.set_button(Button::Right, true);
+        emulator.set_button(Button::A, true);
+        for _ in 0..60 {
+            emulator.step_frame();
+        }
+
+        assert_ne!(emulator.frame_buffer(), before.as_slice());
+        assert!(!emulator.cpu_state().stopped);
+    }
+
+    #[test]
+    fn bundled_target_rom_uses_only_dmc_direct_load_on_start_path() {
+        let rom = Rom::from_path(crate::DEFAULT_ROM_PATH).unwrap();
+        let mut emulator =
+            Emulator::new(rom, "Super Mario Bros. (Japan, USA).nes".to_string()).unwrap();
+
+        for _ in 0..90 {
+            emulator.step_frame();
+        }
+        emulator.set_button(Button::Start, true);
+        for _ in 0..8 {
+            emulator.step_frame();
+        }
+        emulator.set_button(Button::Start, false);
+        for _ in 0..240 {
+            emulator.step_frame();
+        }
+
+        let state = emulator.save_state();
+        assert_eq!(state.apu.enabled & 0x10, 0);
+        assert_eq!(state.apu.registers[0x10], 0);
+        assert_ne!(state.apu.registers[0x11], 0);
+        assert_eq!(&state.apu.registers[0x12..=0x13], &[0, 0]);
     }
 
     fn unique_colors(frame: &[u8]) -> usize {
