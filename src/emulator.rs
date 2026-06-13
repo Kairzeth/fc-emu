@@ -5,7 +5,7 @@ use crate::{
     cpu::CpuState,
     input::{Button, Controller},
     mapper::from_rom,
-    ppu::Ppu,
+    ppu::{Ppu, PpuDebugState},
     rom::Rom,
     save_state::{SAVE_VERSION, SaveState},
 };
@@ -14,6 +14,13 @@ pub struct Emulator {
     cpu: Cpu,
     bus: Bus,
     rom_name: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct EmulatorDebugState {
+    pub cpu: CpuState,
+    pub ppu: PpuDebugState,
+    pub cpu_ram: Vec<u8>,
 }
 
 impl Emulator {
@@ -85,6 +92,14 @@ impl Emulator {
 
     pub fn cpu_state(&self) -> CpuState {
         self.cpu.snapshot()
+    }
+
+    pub fn debug_state(&self) -> EmulatorDebugState {
+        EmulatorDebugState {
+            cpu: self.cpu.snapshot(),
+            ppu: self.bus.ppu_debug_state(),
+            cpu_ram: self.bus.cpu_ram().to_vec(),
+        }
     }
 }
 

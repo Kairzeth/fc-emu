@@ -2,7 +2,7 @@ use crate::{
     apu::{Apu, ApuState},
     input::Controller,
     mapper::Mapper,
-    ppu::{Ppu, PpuState},
+    ppu::{Ppu, PpuDebugState, PpuState},
 };
 use serde::{Deserialize, Serialize};
 
@@ -33,6 +33,7 @@ pub struct Bus {
     controller1: Controller,
     mapper: Box<dyn Mapper>,
     oam_dma: OamDmaState,
+    pending_dma_cycles: u16,
 }
 
 impl Bus {
@@ -44,6 +45,7 @@ impl Bus {
             controller1,
             mapper,
             oam_dma: OamDmaState::default(),
+            pending_dma_cycles: 0,
         }
     }
 
@@ -80,7 +82,7 @@ impl Bus {
         }
     }
 
-    pub fn step(&mut self, cpu_cycles: u8) {
+    pub fn step(&mut self, cpu_cycles: u16) {
         self.ppu
             .step(usize::from(cpu_cycles) * 3, self.mapper.as_ref());
         self.apu.step(cpu_cycles);
@@ -104,6 +106,12 @@ impl Bus {
 
     pub fn drain_audio_samples(&mut self, output: &mut Vec<f32>) {
         self.apu.drain_samples(output);
+    }
+
+    pub fn take_pending_dma_cycles(&mut self) -> u16 {
+        let cycles = self.pending_dma_cycles;
+        self.pending_dma_cycles = 0;
+        cycles
     }
 
     pub fn controller_mut(&mut self) -> &mut Controller {
@@ -130,6 +138,10 @@ impl Bus {
         self.ppu.snapshot()
     }
 
+    pub fn ppu_debug_state(&self) -> PpuDebugState {
+        self.ppu.debug_state()
+    }
+
     pub fn apu_snapshot(&self) -> ApuState {
         self.apu.snapshot()
     }
@@ -140,6 +152,7 @@ impl Bus {
         self.cpu_ram[..len].copy_from_slice(&bus.cpu_ram[..len]);
         self.controller1 = bus.controller1.clone();
         self.oam_dma = bus.oam_dma;
+        self.pending_dma_cycles = 0;
         self.ppu.restore(ppu);
         self.apu.restore(apu);
     }
@@ -153,6 +166,7 @@ impl Bus {
         }
 
         self.oam_dma.last_page = Some(page);
+        self.pending_dma_cycles = self.pending_dma_cycles.saturating_add(513);
         self.ppu.write_oam_dma(&data);
     }
 }
@@ -269,6 +283,8 @@ mod tests {
         bus.cpu_write(0x4014, 0x02);
 
         assert_eq!(bus.oam_dma_state().last_page, Some(0x02));
+        assert_eq!(bus.take_pending_dma_cycles(), 513);
+        assert_eq!(bus.take_pending_dma_cycles(), 0);
         bus.cpu_write(0x2003, 0x00);
         assert_eq!(bus.cpu_read(0x2004), 0x00);
         bus.cpu_write(0x2003, 0x7F);

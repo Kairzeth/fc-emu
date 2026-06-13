@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub const SAVE_VERSION: u32 = 3;
+pub const SAVE_VERSION: u32 = 4;
 pub const SAVE_DIR: &str = "saves";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

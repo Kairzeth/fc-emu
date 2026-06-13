@@ -1,5 +1,6 @@
 use crate::{
-    emulator::Emulator,
+    cpu::CpuState,
+    emulator::{Emulator, EmulatorDebugState},
     input::{AppControlAction, Button, KeyMapping, KeyboardKey, SaveSlot, default_key_mapping},
     rom::Rom,
     save_state::{
@@ -128,6 +129,14 @@ impl App {
         self.emulator.drain_audio_samples(output);
     }
 
+    pub fn cpu_state(&self) -> CpuState {
+        self.emulator.cpu_state()
+    }
+
+    pub fn debug_state(&self) -> EmulatorDebugState {
+        self.emulator.debug_state()
+    }
+
     pub fn window_title(&self) -> String {
         let name = self
             .rom_path
@@ -183,7 +192,9 @@ mod tests {
     use crate::save_state::{read_state, save_path_for_rom};
     use std::fs;
     use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_TEMP_ROM_ID: AtomicU64 = AtomicU64::new(0);
 
     #[test]
     fn rejects_missing_rom_with_clear_message() {
@@ -357,11 +368,9 @@ mod tests {
     }
 
     fn temp_rom_copy() -> PathBuf {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
+        let unique = NEXT_TEMP_ROM_ID.fetch_add(1, Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!("fc-emu-app-test-{unique}"));
+        let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let rom = dir.join(format!("test-rom-{unique}.nes"));
         fs::copy(crate::DEFAULT_ROM_PATH, &rom).unwrap();

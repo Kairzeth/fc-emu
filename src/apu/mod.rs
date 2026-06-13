@@ -61,7 +61,7 @@ impl Apu {
         }
     }
 
-    pub fn step(&mut self, cpu_cycles: u8) {
+    pub fn step(&mut self, cpu_cycles: u16) {
         if self.enabled == 0 {
             return;
         }

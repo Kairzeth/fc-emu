@@ -1,6 +1,6 @@
 use crate::{
     app::App,
-    input::{AppControlAction, KeyboardKey, SaveSlot},
+    input::{AppControlAction, Button, KeyboardKey, SaveSlot},
 };
 use anyhow::{Context, Result};
 use cpal::{
@@ -10,6 +10,9 @@ use cpal::{
 use pixels::{Pixels, SurfaceTexture};
 use std::{
     collections::VecDeque,
+    fs::File,
+    io::Write,
+    path::PathBuf,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -51,7 +54,52 @@ impl WindowConfig {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WindowValidationConfig {
+    pub max_frames: u64,
+    pub stale_frame_limit: u64,
+    pub trace_path: Option<std::path::PathBuf>,
+}
+
+impl Default for WindowValidationConfig {
+    fn default() -> Self {
+        Self {
+            max_frames: 1_200,
+            stale_frame_limit: 180,
+            trace_path: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WindowValidationReport {
+    pub frames: u64,
+    pub stagnant_frames: u64,
+    pub cpu_pc: u16,
+    pub cpu_cycles: u64,
+    pub cpu_stopped: bool,
+    pub ppu_status: u8,
+    pub scroll_x: u16,
+    pub scroll_y: u16,
+    pub ram_digest: u64,
+    pub oam_digest: u64,
+    pub passed: bool,
+    pub reason: String,
+}
+
 pub fn run(app: App) -> Result<()> {
+    run_inner(app, None).map(|_| ())
+}
+
+pub fn run_validation(app: App, config: WindowValidationConfig) -> Result<WindowValidationReport> {
+    let validation = run_inner(app, Some(ValidationState::new(config)))?;
+    validation.context("validation mode exited without a report")
+}
+
+fn run_inner(
+    app: App,
+    validation: Option<ValidationState>,
+) -> Result<Option<WindowValidationReport>> {
     let event_loop = EventLoop::new().context("failed to create winit event loop")?;
     event_loop.set_control_flow(ControlFlow::Poll);
 
@@ -63,11 +111,14 @@ pub fn run(app: App) -> Result<()> {
         pixels: None,
         audio,
         next_frame_at: Instant::now(),
+        runtime_trace: RuntimeTrace::new_for_current_app().ok(),
+        validation,
     };
 
     event_loop
         .run_app(&mut runtime)
-        .context("winit event loop failed")
+        .context("winit event loop failed")?;
+    Ok(runtime.validation.and_then(|validation| validation.report))
 }
 
 struct RuntimeApp {
@@ -77,6 +128,8 @@ struct RuntimeApp {
     pixels: Option<Pixels<'static>>,
     audio: AudioOutput,
     next_frame_at: Instant,
+    runtime_trace: Option<RuntimeTrace>,
+    validation: Option<ValidationState>,
 }
 
 impl RuntimeApp {
@@ -124,14 +177,21 @@ impl RuntimeApp {
             return;
         };
 
-        let now = Instant::now();
-        if now < self.next_frame_at {
+        if self.validation.is_none() {
+            let now = Instant::now();
+            if now < self.next_frame_at {
+                event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_frame_at));
+                return;
+            }
+            self.next_frame_at = now + TARGET_FRAME_TIME;
             event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_frame_at));
-            return;
+        } else {
+            event_loop.set_control_flow(ControlFlow::Poll);
         }
-        self.next_frame_at = now + TARGET_FRAME_TIME;
-        event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_frame_at));
 
+        if let Some(validation) = self.validation.as_mut() {
+            validation.apply_script(&mut self.app);
+        }
         self.app.tick();
         if self.app.take_audio_reset_requested() {
             self.audio.clear();
@@ -144,6 +204,15 @@ impl RuntimeApp {
             frame.copy_from_slice(source);
         }
         draw_menu_overlay(frame, self.app.current_slot(), self.app.paused());
+
+        if let Some(validation) = self.validation.as_mut() {
+            validation.record_frame(&self.app);
+            if validation.should_exit() {
+                self.app.request_exit();
+            }
+        } else if let Some(trace) = self.runtime_trace.as_mut() {
+            trace.record(&self.app);
+        }
 
         window.set_title(&self.app.window_title());
         if let Err(err) = pixels.render() {
@@ -185,6 +254,67 @@ impl RuntimeApp {
             None => {}
         }
     }
+}
+
+struct RuntimeTrace {
+    file: File,
+    frame: u64,
+}
+
+impl RuntimeTrace {
+    fn new_for_current_app() -> Result<Self> {
+        let Some(path) = runtime_trace_path() else {
+            anyhow::bail!("runtime tracing is not enabled");
+        };
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut file = File::create(path)?;
+        write_trace_header(&mut file)?;
+        Ok(Self { file, frame: 0 })
+    }
+
+    fn record(&mut self, app: &App) {
+        let debug = app.debug_state();
+        let frame_hash = frame_hash(app.frame_buffer());
+        let gameplay_hash = gameplay_hash(app.frame_buffer());
+        let ram_digest = digest(&debug.cpu_ram);
+        let oam_digest = digest(&debug.ppu.oam);
+        if let Err(err) = write_trace_row(
+            &mut self.file,
+            self.frame,
+            frame_hash,
+            gameplay_hash,
+            ram_digest,
+            oam_digest,
+            &debug,
+        ) {
+            warn!(%err, "failed to write runtime trace row");
+        }
+        if let Err(err) = self.file.flush() {
+            warn!(%err, "failed to flush runtime trace");
+        }
+        self.frame += 1;
+    }
+}
+
+fn runtime_trace_path() -> Option<PathBuf> {
+    if let Ok(path) = std::env::var("FC_EMU_RUNTIME_TRACE_PATH")
+        && !path.is_empty()
+    {
+        return Some(PathBuf::from(path));
+    }
+
+    let exe = std::env::current_exe().ok()?;
+    for ancestor in exe.ancestors() {
+        if ancestor.extension().and_then(|ext| ext.to_str()) == Some("app") {
+            return ancestor
+                .parent()
+                .map(|dist| dist.join("window-runtime-trace.csv"));
+        }
+    }
+
+    None
 }
 
 impl ApplicationHandler for RuntimeApp {
@@ -245,11 +375,316 @@ impl ApplicationHandler for RuntimeApp {
         }
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         if let Some(window) = &self.window {
             window.request_redraw();
         }
+        if self.validation.is_some() {
+            self.redraw(event_loop);
+        }
     }
+}
+
+struct ValidationState {
+    config: WindowValidationConfig,
+    frame: u64,
+    last_hash: Option<u64>,
+    last_gameplay_hash: Option<u64>,
+    last_oam_digest: Option<u64>,
+    stagnant_frames: u64,
+    stagnant_gameplay_frames: u64,
+    stagnant_oam_frames: u64,
+    trace: Option<std::fs::File>,
+    report: Option<WindowValidationReport>,
+}
+
+impl ValidationState {
+    fn new(config: WindowValidationConfig) -> Self {
+        let trace = config.trace_path.as_ref().and_then(|path| {
+            if let Some(parent) = path.parent()
+                && let Err(err) = std::fs::create_dir_all(parent)
+            {
+                warn!(%err, path = %path.display(), "failed to create validation trace directory");
+                return None;
+            }
+
+            match std::fs::File::create(path) {
+                Ok(mut file) => {
+                    if let Err(err) = write_trace_header(&mut file) {
+                        warn!(%err, path = %path.display(), "failed to write validation trace header");
+                        return None;
+                    }
+                    Some(file)
+                }
+                Err(err) => {
+                    warn!(%err, path = %path.display(), "failed to create validation trace");
+                    None
+                }
+            }
+        });
+
+        Self {
+            config,
+            frame: 0,
+            last_hash: None,
+            last_gameplay_hash: None,
+            last_oam_digest: None,
+            stagnant_frames: 0,
+            stagnant_gameplay_frames: 0,
+            stagnant_oam_frames: 0,
+            trace,
+            report: None,
+        }
+    }
+
+    fn apply_script(&self, app: &mut App) {
+        set_button_at(app, self.frame, 90, Button::Start, true);
+        set_button_at(app, self.frame, 98, Button::Start, false);
+        set_button_at(app, self.frame, 170, Button::Right, true);
+        set_button_at(app, self.frame, 170, Button::B, true);
+        set_button_at(app, self.frame, 315, Button::A, true);
+        set_button_at(app, self.frame, 344, Button::A, false);
+        set_button_at(app, self.frame, 390, Button::A, true);
+        set_button_at(app, self.frame, 418, Button::A, false);
+        set_button_at(app, self.frame, 465, Button::A, true);
+        set_button_at(app, self.frame, 492, Button::A, false);
+        set_button_at(
+            app,
+            self.frame,
+            self.config.max_frames + 1,
+            Button::Right,
+            false,
+        );
+        set_button_at(
+            app,
+            self.frame,
+            self.config.max_frames + 1,
+            Button::B,
+            false,
+        );
+    }
+
+    fn record_frame(&mut self, app: &App) {
+        let hash = frame_hash(app.frame_buffer());
+        let gameplay_hash = gameplay_hash(app.frame_buffer());
+        let debug = app.debug_state();
+        let ram_digest = digest(&debug.cpu_ram);
+        let oam_digest = digest(&debug.ppu.oam);
+
+        if self.last_hash == Some(hash) {
+            self.stagnant_frames += 1;
+        } else {
+            self.stagnant_frames = 0;
+            self.last_hash = Some(hash);
+        }
+
+        if self.last_gameplay_hash == Some(gameplay_hash) {
+            self.stagnant_gameplay_frames += 1;
+        } else {
+            self.stagnant_gameplay_frames = 0;
+            self.last_gameplay_hash = Some(gameplay_hash);
+        }
+
+        if self.last_oam_digest == Some(oam_digest) {
+            self.stagnant_oam_frames += 1;
+        } else {
+            self.stagnant_oam_frames = 0;
+            self.last_oam_digest = Some(oam_digest);
+        }
+
+        self.write_trace(hash, gameplay_hash, ram_digest, oam_digest, &debug);
+
+        if debug.cpu.stopped {
+            self.finish(self.report_for(
+                false,
+                "CPU stopped during window validation",
+                ram_digest,
+                oam_digest,
+                &debug,
+            ));
+        } else if self.frame > 180 && self.stagnant_gameplay_frames >= self.config.stale_frame_limit
+        {
+            self.finish(self.report_for(
+                false,
+                "gameplay area stopped changing during scripted play",
+                ram_digest,
+                oam_digest,
+                &debug,
+            ));
+        } else if self.frame > 180 && self.stagnant_oam_frames >= self.config.stale_frame_limit {
+            self.finish(self.report_for(
+                false,
+                "OAM sprite data stopped changing during scripted play",
+                ram_digest,
+                oam_digest,
+                &debug,
+            ));
+        } else if self.frame >= self.config.max_frames {
+            self.finish(self.report_for(
+                true,
+                "scripted window validation completed",
+                ram_digest,
+                oam_digest,
+                &debug,
+            ));
+        }
+
+        self.frame += 1;
+    }
+
+    fn report_for(
+        &self,
+        passed: bool,
+        reason: &str,
+        ram_digest: u64,
+        oam_digest: u64,
+        debug: &crate::emulator::EmulatorDebugState,
+    ) -> WindowValidationReport {
+        WindowValidationReport {
+            frames: self.frame,
+            stagnant_frames: self.stagnant_frames,
+            cpu_pc: debug.cpu.pc,
+            cpu_cycles: debug.cpu.cycles,
+            cpu_stopped: debug.cpu.stopped,
+            ppu_status: debug.ppu.status,
+            scroll_x: debug.ppu.scroll_x,
+            scroll_y: debug.ppu.scroll_y,
+            ram_digest,
+            oam_digest,
+            passed,
+            reason: reason.to_string(),
+        }
+    }
+
+    fn write_trace(
+        &mut self,
+        frame_hash: u64,
+        gameplay_hash: u64,
+        ram_digest: u64,
+        oam_digest: u64,
+        debug: &crate::emulator::EmulatorDebugState,
+    ) {
+        let Some(trace) = self.trace.as_mut() else {
+            return;
+        };
+
+        if let Err(err) = write_trace_row(
+            trace,
+            self.frame,
+            frame_hash,
+            gameplay_hash,
+            ram_digest,
+            oam_digest,
+            debug,
+        ) {
+            warn!(%err, "failed to write validation trace row");
+        }
+        if let Err(err) = trace.flush() {
+            warn!(%err, "failed to flush validation trace");
+        }
+    }
+
+    fn finish(&mut self, report: WindowValidationReport) {
+        if self.report.is_none() {
+            self.report = Some(report);
+        }
+    }
+
+    fn should_exit(&self) -> bool {
+        self.report.is_some()
+    }
+}
+
+fn set_button_at(app: &mut App, frame: u64, target: u64, button: Button, pressed: bool) {
+    if frame == target {
+        app.set_button(button, pressed);
+    }
+}
+
+fn write_trace_header(file: &mut File) -> std::io::Result<()> {
+    writeln!(
+        file,
+        "frame,cpu_pc,cpu_a,cpu_x,cpu_y,cpu_sp,cpu_status,cpu_cycles,stopped,ppu_status,scanline,dot,scroll_x,scroll_y,vram_addr,temp_addr,frame_hash,gameplay_hash,ram_digest,oam_digest,oam0_y,oam0_tile,oam0_attr,oam0_x,ram_000e,ram_001d,ram_0086,ram_00ce,ram_006d,ram_075a"
+    )
+}
+
+fn write_trace_row(
+    file: &mut File,
+    frame: u64,
+    frame_hash: u64,
+    gameplay_hash: u64,
+    ram_digest: u64,
+    oam_digest: u64,
+    debug: &crate::emulator::EmulatorDebugState,
+) -> std::io::Result<()> {
+    let oam = &debug.ppu.oam;
+    let ram = &debug.cpu_ram;
+    writeln!(
+        file,
+        "{},{:04x},{:02x},{:02x},{:02x},{:02x},{:02x},{},{},{:02x},{},{},{},{},{:04x},{:04x},{:016x},{:016x},{:016x},{:016x},{:02x},{:02x},{:02x},{:02x},{:02x},{:02x},{:02x},{:02x},{:02x},{:02x}",
+        frame,
+        debug.cpu.pc,
+        debug.cpu.a,
+        debug.cpu.x,
+        debug.cpu.y,
+        debug.cpu.sp,
+        debug.cpu.status,
+        debug.cpu.cycles,
+        debug.cpu.stopped,
+        debug.ppu.status,
+        debug.ppu.scanline,
+        debug.ppu.dot,
+        debug.ppu.scroll_x,
+        debug.ppu.scroll_y,
+        debug.ppu.vram_addr,
+        debug.ppu.temp_addr,
+        frame_hash,
+        gameplay_hash,
+        ram_digest,
+        oam_digest,
+        byte_at(oam, 0),
+        byte_at(oam, 1),
+        byte_at(oam, 2),
+        byte_at(oam, 3),
+        byte_at(ram, 0x000e),
+        byte_at(ram, 0x001d),
+        byte_at(ram, 0x0086),
+        byte_at(ram, 0x00ce),
+        byte_at(ram, 0x006d),
+        byte_at(ram, 0x075a),
+    )
+}
+
+fn frame_hash(frame: &[u8]) -> u64 {
+    digest(frame)
+}
+
+fn gameplay_hash(frame: &[u8]) -> u64 {
+    let start_y = 32usize;
+    let end_y = NES_HEIGHT as usize;
+    let row_len = NES_WIDTH as usize * 4;
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for y in start_y..end_y {
+        let row_start = y * row_len;
+        for byte in frame[row_start..row_start + row_len].iter().step_by(16) {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+    hash
+}
+
+fn digest(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for byte in bytes.iter().step_by(16) {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+fn byte_at(bytes: &[u8], index: usize) -> u8 {
+    bytes.get(index).copied().unwrap_or(0)
 }
 
 thread_local! {

@@ -54,9 +54,9 @@ impl Cpu {
         self.cycles += 7;
     }
 
-    pub fn step(&mut self, bus: &mut Bus) -> u8 {
+    pub fn step(&mut self, bus: &mut Bus) -> u16 {
         if let Some(cycles) = self.service_interrupt(bus) {
-            return cycles;
+            return u16::from(cycles);
         }
 
         if self.stopped {
@@ -829,8 +829,9 @@ impl Cpu {
                 2
             }
         };
-        self.cycles += u64::from(cycles);
-        cycles
+        let total_cycles = u16::from(cycles) + bus.take_pending_dma_cycles();
+        self.cycles += u64::from(total_cycles);
+        total_cycles
     }
 
     pub fn nmi(&mut self, bus: &mut Bus) {

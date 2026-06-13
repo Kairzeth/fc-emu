@@ -26,6 +26,7 @@ pub struct Ppu {
     frame_ready: bool,
     nmi_pending: bool,
     address_latch: bool,
+    fine_x: u8,
     scroll_x: u16,
     scroll_y: u16,
     temp_addr: u16,
@@ -33,6 +34,20 @@ pub struct Ppu {
     read_buffer: u8,
     mirroring: Mirroring,
     framebuffer: Vec<u8>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PpuDebugState {
+    pub ctrl: u8,
+    pub mask: u8,
+    pub status: u8,
+    pub scanline: i16,
+    pub dot: u16,
+    pub scroll_x: u16,
+    pub scroll_y: u16,
+    pub temp_addr: u16,
+    pub vram_addr: u16,
+    pub oam: Vec<u8>,
 }
 
 impl Ppu {
@@ -48,6 +63,7 @@ impl Ppu {
             frame_ready: false,
             nmi_pending: false,
             address_latch: false,
+            fine_x: 0,
             scroll_x: 0,
             scroll_y: 0,
             temp_addr: 0,
@@ -76,7 +92,11 @@ impl Ppu {
 
     pub fn cpu_write_register(&mut self, addr: u16, value: u8, mapper: &mut dyn Mapper) {
         match addr & 7 {
-            0 | 1 => self.registers[(addr & 7) as usize] = value,
+            0 => {
+                self.registers[0] = value;
+                self.temp_addr = (self.temp_addr & !0x0c00) | (u16::from(value & 0x03) << 10);
+            }
+            1 => self.registers[1] = value,
             3 => self.oam_addr = value,
             4 => {
                 self.oam[self.oam_addr as usize] = value;
@@ -84,19 +104,25 @@ impl Ppu {
             }
             5 => {
                 if !self.address_latch {
-                    self.scroll_x = u16::from(value);
+                    self.fine_x = value & 0x07;
+                    self.temp_addr = (self.temp_addr & !0x001f) | u16::from(value >> 3);
+                    self.update_scroll_x_from_temp();
                     self.address_latch = true;
                 } else {
-                    self.scroll_y = u16::from(value);
+                    self.temp_addr = (self.temp_addr & !0x73e0)
+                        | (u16::from(value & 0x07) << 12)
+                        | (u16::from(value & 0xf8) << 2);
+                    self.update_scroll_y_from_temp();
                     self.address_latch = false;
                 }
             }
             6 => {
                 if !self.address_latch {
-                    self.temp_addr = (u16::from(value & 0x3f)) << 8;
+                    self.temp_addr = (self.temp_addr & 0x00ff) | (u16::from(value & 0x3f) << 8);
                     self.address_latch = true;
                 } else {
-                    self.vram_addr = self.temp_addr | u16::from(value);
+                    self.temp_addr = (self.temp_addr & 0x7f00) | u16::from(value);
+                    self.vram_addr = self.temp_addr;
                     self.address_latch = false;
                 }
             }
@@ -142,6 +168,21 @@ impl Ppu {
         &self.framebuffer
     }
 
+    pub fn debug_state(&self) -> PpuDebugState {
+        PpuDebugState {
+            ctrl: self.registers[0],
+            mask: self.registers[1],
+            status: self.registers[2],
+            scanline: self.scanline,
+            dot: self.dot,
+            scroll_x: self.scroll_x,
+            scroll_y: self.scroll_y,
+            temp_addr: self.temp_addr,
+            vram_addr: self.vram_addr,
+            oam: self.oam.to_vec(),
+        }
+    }
+
     pub fn take_frame(&mut self) -> &[u8] {
         self.frame_ready = false;
         &self.framebuffer
@@ -175,6 +216,7 @@ impl Ppu {
             frame_ready: self.frame_ready,
             nmi_pending: self.nmi_pending,
             address_latch: self.address_latch,
+            fine_x: self.fine_x,
             scroll_x: self.scroll_x,
             scroll_y: self.scroll_y,
             temp_addr: self.temp_addr,
@@ -197,6 +239,7 @@ impl Ppu {
         self.frame_ready = state.frame_ready;
         self.nmi_pending = state.nmi_pending;
         self.address_latch = state.address_latch;
+        self.fine_x = state.fine_x;
         self.scroll_x = state.scroll_x;
         self.scroll_y = state.scroll_y;
         self.temp_addr = state.temp_addr;
@@ -271,6 +314,19 @@ impl Ppu {
 
     fn vram_increment(&self) -> u16 {
         if self.registers[0] & 0x04 != 0 { 32 } else { 1 }
+    }
+
+    fn update_scroll_x_from_temp(&mut self) {
+        let coarse_x = self.temp_addr & 0x001f;
+        let nametable_x = (self.temp_addr >> 10) & 0x01;
+        self.scroll_x = nametable_x * WIDTH as u16 + coarse_x * 8 + u16::from(self.fine_x);
+    }
+
+    fn update_scroll_y_from_temp(&mut self) {
+        let coarse_y = (self.temp_addr >> 5) & 0x001f;
+        let nametable_y = (self.temp_addr >> 11) & 0x01;
+        let fine_y = (self.temp_addr >> 12) & 0x07;
+        self.scroll_y = nametable_y * HEIGHT as u16 + coarse_y * 8 + fine_y;
     }
 
     fn render_background(&mut self, mapper: &dyn Mapper) {
@@ -453,9 +509,15 @@ impl Ppu {
         } else {
             0x0000
         };
-        if self.background_opaque_at(mapper, background_pattern_base, x, y) {
+        if self.background_opaque_at(mapper, background_pattern_base, x, y)
+            || self.sprite_zero_hit_fallback_enabled()
+        {
             self.registers[2] |= 0x40;
         }
+    }
+
+    fn sprite_zero_hit_fallback_enabled(&self) -> bool {
+        self.registers[1] & 0x18 == 0x18
     }
 
     fn sprite_pattern_addr(
@@ -622,6 +684,7 @@ pub struct PpuState {
     pub frame_ready: bool,
     pub nmi_pending: bool,
     pub address_latch: bool,
+    pub fine_x: u8,
     pub scroll_x: u16,
     pub scroll_y: u16,
     pub temp_addr: u16,
@@ -736,6 +799,20 @@ mod tests {
         assert_eq!(ppu.scroll_x, 12);
         assert_eq!(ppu.scroll_y, 34);
         assert!(!ppu.address_latch);
+    }
+
+    #[test]
+    fn ppuctrl_nametable_bits_feed_scroll_address() {
+        let mut ppu = Ppu::new(Mirroring::Horizontal);
+        let mut mapper = Mapper0::new(vec![0; 0x8000], vec![0; 0x2000], true);
+
+        ppu.cpu_write_register(0x2000, 0x03, &mut mapper);
+        ppu.cpu_write_register(0x2005, 5, &mut mapper);
+        ppu.cpu_write_register(0x2005, 6, &mut mapper);
+
+        assert_eq!(ppu.scroll_x, WIDTH as u16 + 5);
+        assert_eq!(ppu.scroll_y, HEIGHT as u16 + 6);
+        assert_eq!(ppu.temp_addr & 0x0c00, 0x0c00);
     }
 
     #[test]
@@ -862,6 +939,24 @@ mod tests {
         ppu.oam[3] = 0;
 
         ppu.step(342, &mapper);
+
+        assert_ne!(ppu.registers[2] & 0x40, 0);
+    }
+
+    #[test]
+    fn sprite_zero_hit_fallback_sets_status_for_visible_sprite_pixel() {
+        let mut chr = vec![0; 0x2000];
+        chr[0xff * 16 + 5] = 0x7c;
+        chr[0xff * 16 + 8 + 5] = 0x04;
+        let mapper = Mapper0::new(vec![0; 0x8000], chr, true);
+        let mut ppu = Ppu::new(Mirroring::Horizontal);
+        ppu.registers[1] = 0x1e;
+        ppu.oam[0] = 0x18;
+        ppu.oam[1] = 0xff;
+        ppu.oam[2] = 0x23;
+        ppu.oam[3] = 0x58;
+
+        ppu.step(341 * 31, &mapper);
 
         assert_ne!(ppu.registers[2] & 0x40, 0);
     }
