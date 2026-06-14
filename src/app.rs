@@ -18,6 +18,7 @@ pub struct App {
     paused: bool,
     current_slot: u8,
     last_state: Option<SaveState>,
+    status_message: Option<String>,
     should_exit: bool,
     audio_reset_requested: bool,
 }
@@ -51,6 +52,7 @@ impl App {
             paused: false,
             current_slot: 1,
             last_state: None,
+            status_message: None,
             should_exit: false,
             audio_reset_requested: false,
         })
@@ -71,11 +73,22 @@ impl App {
             AppControlAction::Pause => self.paused = true,
             AppControlAction::Resume => self.paused = false,
             AppControlAction::TogglePause => self.paused = !self.paused,
-            AppControlAction::SaveState => self.save_current_state()?,
-            AppControlAction::LoadState => self.load_current_state()?,
+            AppControlAction::SaveState => {
+                if let Err(err) = self.save_current_state() {
+                    self.status_message = Some(format!("Save failed: {err:#}"));
+                    return Err(err);
+                }
+            }
+            AppControlAction::LoadState => {
+                if let Err(err) = self.load_current_state() {
+                    self.status_message = Some(format!("Load failed: {err:#}"));
+                    return Err(err);
+                }
+            }
             AppControlAction::SelectSaveSlot(SaveSlot::Slot(slot)) => {
                 validate_slot(slot)?;
                 self.current_slot = slot;
+                self.status_message = Some(format!("Slot {slot}"));
             }
         }
         Ok(())
@@ -101,6 +114,7 @@ impl App {
         write_state(&path, &state)
             .with_context(|| format!("failed to save state to '{}'", path.display()))?;
         self.last_state = Some(state);
+        self.status_message = Some(format!("Saved slot {}", self.current_slot));
         info!(slot = self.current_slot, path = %path.display(), "saved state");
         Ok(())
     }
@@ -113,6 +127,7 @@ impl App {
         self.emulator.load_state(&state);
         self.last_state = Some(state);
         self.audio_reset_requested = true;
+        self.status_message = Some(format!("Loaded slot {}", self.current_slot));
         info!(slot = self.current_slot, path = %path.display(), "loaded state");
         Ok(())
     }
@@ -143,11 +158,16 @@ impl App {
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("fc-emu");
-        if self.paused {
+        let mut title = if self.paused {
             format!("{name} - Paused")
         } else {
             name.to_string()
+        };
+        if let Some(message) = &self.status_message {
+            title.push_str(" - ");
+            title.push_str(message);
         }
+        title
     }
 
     pub fn paused(&self) -> bool {
@@ -156,6 +176,10 @@ impl App {
 
     pub fn current_slot(&self) -> u8 {
         self.current_slot
+    }
+
+    pub fn status_message(&self) -> Option<&str> {
+        self.status_message.as_deref()
     }
 
     pub fn rom_path(&self) -> &Path {
@@ -248,6 +272,8 @@ mod tests {
             state.rom_name,
             temp_rom.file_name().unwrap().to_string_lossy()
         );
+        assert_eq!(app.status_message(), Some("Saved slot 2"));
+        assert!(app.window_title().contains("Saved slot 2"));
         cleanup_temp_rom_and_save(temp_rom, path);
     }
 
@@ -268,11 +294,14 @@ mod tests {
 
         assert!(error_chain.contains("failed to load state"));
         assert!(error_chain.contains("does not exist"));
+        assert!(app.status_message().is_some_and(|message| {
+            message.starts_with("Load failed:") && message.contains("does not exist")
+        }));
         cleanup_temp_rom_and_save(temp_rom, path);
     }
 
     #[test]
-    fn f5_and_f9_use_current_disk_save_slot() {
+    fn keyboard_save_and_load_shortcuts_use_current_disk_save_slot() {
         let temp_rom = temp_rom_copy();
         let mut app = App::new(&temp_rom).unwrap();
         app.handle_key(KeyboardKey::Digit(1), true).unwrap();
@@ -280,12 +309,26 @@ mod tests {
         let _ = fs::remove_file(&path);
 
         app.tick();
-        app.handle_key(KeyboardKey::F5, true).unwrap();
+        app.handle_key(KeyboardKey::F, true).unwrap();
         let saved = read_state(&path).unwrap();
         app.tick();
-        app.handle_key(KeyboardKey::F9, true).unwrap();
+        app.handle_key(KeyboardKey::L, true).unwrap();
 
         assert_eq!(app.last_state.as_ref(), Some(&saved));
+        assert!(app.take_audio_reset_requested());
+        cleanup_temp_rom_and_save(temp_rom, path);
+    }
+
+    #[test]
+    fn f5_and_f9_remain_save_and_load_shortcuts() {
+        let temp_rom = temp_rom_copy();
+        let mut app = App::new(&temp_rom).unwrap();
+        let path = save_path_for_rom(app.rom_path(), app.current_slot()).unwrap();
+        let _ = fs::remove_file(&path);
+
+        app.handle_key(KeyboardKey::F5, true).unwrap();
+        app.handle_key(KeyboardKey::F9, true).unwrap();
+
         assert!(app.take_audio_reset_requested());
         cleanup_temp_rom_and_save(temp_rom, path);
     }

@@ -203,7 +203,12 @@ impl RuntimeApp {
         if frame.len() == source.len() {
             frame.copy_from_slice(source);
         }
-        draw_menu_overlay(frame, self.app.current_slot(), self.app.paused());
+        draw_menu_overlay(
+            frame,
+            self.app.current_slot(),
+            self.app.paused(),
+            self.app.status_message(),
+        );
 
         if let Some(validation) = self.validation.as_mut() {
             validation.record_frame(&self.app);
@@ -700,6 +705,8 @@ fn map_key(key: KeyCode) -> Option<KeyboardKey> {
         KeyCode::KeyX => Some(KeyboardKey::X),
         KeyCode::KeyZ => Some(KeyboardKey::Z),
         KeyCode::KeyS => Some(KeyboardKey::S),
+        KeyCode::KeyF => Some(KeyboardKey::F),
+        KeyCode::KeyL => Some(KeyboardKey::L),
         KeyCode::Enter | KeyCode::NumpadEnter => Some(KeyboardKey::Enter),
         KeyCode::ShiftRight => Some(KeyboardKey::RightShift),
         KeyCode::Tab => Some(KeyboardKey::Tab),
@@ -740,6 +747,8 @@ fn map_character_key(text: &str) -> Option<KeyboardKey> {
         "x" | "X" => Some(KeyboardKey::X),
         "z" | "Z" => Some(KeyboardKey::Z),
         "s" | "S" => Some(KeyboardKey::S),
+        "f" | "F" => Some(KeyboardKey::F),
+        "l" | "L" => Some(KeyboardKey::L),
         "p" | "P" => Some(KeyboardKey::P),
         "1" => Some(KeyboardKey::Digit(1)),
         "2" => Some(KeyboardKey::Digit(2)),
@@ -894,7 +903,7 @@ fn write_audio_f32(data: &mut [f32], channels: usize, samples: &Arc<Mutex<VecDeq
     }
 }
 
-fn draw_menu_overlay(frame: &mut [u8], current_slot: u8, paused: bool) {
+fn draw_menu_overlay(frame: &mut [u8], current_slot: u8, paused: bool, status: Option<&str>) {
     const MENU_HEIGHT: usize = 24;
     const BUTTON_WIDTH: usize = 32;
     let width = NES_WIDTH as usize;
@@ -948,6 +957,10 @@ fn draw_menu_overlay(frame: &mut [u8], current_slot: u8, paused: bool) {
     for (button, label) in labels.iter().enumerate() {
         draw_menu_label(frame, button * BUTTON_WIDTH, BUTTON_WIDTH, label);
     }
+
+    if let Some(label) = status_label(status) {
+        draw_status_label(frame, label);
+    }
 }
 
 fn slot_color(current_slot: u8, slot: u8) -> [u8; 4] {
@@ -974,6 +987,57 @@ fn draw_menu_label(frame: &mut [u8], button_x: usize, button_width: usize, text:
 
     for ch in text.chars() {
         draw_glyph(frame, x, y, SCALE, ch);
+        x += (GLYPH_WIDTH + SPACING) * SCALE;
+    }
+}
+
+fn status_label(status: Option<&str>) -> Option<&'static str> {
+    let status = status?;
+    if status.starts_with("Saved") {
+        Some("SAVED")
+    } else if status.starts_with("Loaded") {
+        Some("LOAD")
+    } else if status.starts_with("Slot 1") {
+        Some("SLOT1")
+    } else if status.starts_with("Slot 2") {
+        Some("SLOT2")
+    } else if status.starts_with("Slot 3") {
+        Some("SLOT3")
+    } else if status.contains("failed") {
+        Some("ERROR")
+    } else {
+        None
+    }
+}
+
+fn draw_status_label(frame: &mut [u8], text: &str) {
+    const SCALE: usize = 2;
+    const GLYPH_WIDTH: usize = 3;
+    const SPACING: usize = 1;
+    const PAD_X: usize = 4;
+    const PAD_Y: usize = 3;
+
+    let width = NES_WIDTH as usize;
+    let glyphs = text.chars().count();
+    let text_width = (glyphs * GLYPH_WIDTH + glyphs.saturating_sub(1) * SPACING) * SCALE;
+    let box_width = text_width + PAD_X * 2;
+    let box_height = 5 * SCALE + PAD_Y * 2;
+    let x0 = width.saturating_sub(box_width + 4);
+    let y0 = 28;
+
+    for y in y0..(y0 + box_height).min(NES_HEIGHT as usize) {
+        for x in x0..(x0 + box_width).min(width) {
+            let i = (y * width + x) * 4;
+            frame[i] = 28;
+            frame[i + 1] = 34;
+            frame[i + 2] = 42;
+            frame[i + 3] = 255;
+        }
+    }
+
+    let mut x = x0 + PAD_X;
+    for ch in text.chars() {
+        draw_glyph(frame, x, y0 + PAD_Y, SCALE, ch);
         x += (GLYPH_WIDTH + SPACING) * SCALE;
     }
 }
@@ -1009,6 +1073,8 @@ fn glyph_rows(ch: char) -> Option<[u8; 5]> {
         '3' => Some([0b111, 0b001, 0b111, 0b001, 0b111]),
         'A' => Some([0b010, 0b101, 0b111, 0b101, 0b101]),
         'D' => Some([0b110, 0b101, 0b101, 0b101, 0b110]),
+        'E' => Some([0b111, 0b100, 0b111, 0b100, 0b111]),
+        'F' => Some([0b111, 0b100, 0b111, 0b100, 0b100]),
         'L' => Some([0b100, 0b100, 0b100, 0b100, 0b111]),
         'O' => Some([0b111, 0b101, 0b101, 0b101, 0b111]),
         'P' => Some([0b110, 0b101, 0b110, 0b100, 0b100]),
@@ -1035,9 +1101,28 @@ mod tests {
     fn maps_winit_keys_to_project_keys() {
         assert_eq!(map_key(KeyCode::KeyX), Some(KeyboardKey::X));
         assert_eq!(map_key(KeyCode::KeyS), Some(KeyboardKey::S));
+        assert_eq!(map_key(KeyCode::KeyF), Some(KeyboardKey::F));
+        assert_eq!(map_key(KeyCode::KeyL), Some(KeyboardKey::L));
         assert_eq!(map_key(KeyCode::F5), Some(KeyboardKey::F5));
         assert_eq!(map_key(KeyCode::Digit3), Some(KeyboardKey::Digit(3)));
         assert_eq!(map_key(KeyCode::Escape), None);
+    }
+
+    #[test]
+    fn maps_character_save_and_load_keys_to_project_keys() {
+        assert_eq!(map_character_key("f"), Some(KeyboardKey::F));
+        assert_eq!(map_character_key("F"), Some(KeyboardKey::F));
+        assert_eq!(map_character_key("l"), Some(KeyboardKey::L));
+        assert_eq!(map_character_key("L"), Some(KeyboardKey::L));
+    }
+
+    #[test]
+    fn turns_save_state_status_into_visible_overlay_labels() {
+        assert_eq!(status_label(Some("Saved slot 1")), Some("SAVED"));
+        assert_eq!(status_label(Some("Loaded slot 1")), Some("LOAD"));
+        assert_eq!(status_label(Some("Slot 2")), Some("SLOT2"));
+        assert_eq!(status_label(Some("Load failed: missing")), Some("ERROR"));
+        assert_eq!(status_label(None), None);
     }
 
     #[test]

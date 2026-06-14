@@ -107,8 +107,8 @@ cargo run -- path/to/game.nes
 | Start | Enter |
 | Select | Right Shift, S, or Tab |
 | Pause / Resume | Space or P |
-| Save State | F5 |
-| Load State | F9 |
+| Save State | F or F5 |
+| Load State | L or F9 |
 | Select Slot | 1, 2, 3 |
 | Exit | Escape |
 

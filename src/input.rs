@@ -59,6 +59,8 @@ pub enum KeyboardKey {
     Tab,
     Space,
     P,
+    F,
+    L,
     F5,
     F9,
     Digit(u8),
@@ -150,6 +152,8 @@ pub fn default_key_mapping(key: KeyboardKey) -> Option<KeyMapping> {
             KeyMapping::Controller(Button::Select)
         }
         KeyboardKey::Space | KeyboardKey::P => KeyMapping::App(AppControlAction::TogglePause),
+        KeyboardKey::F => KeyMapping::App(AppControlAction::SaveState),
+        KeyboardKey::L => KeyMapping::App(AppControlAction::LoadState),
         KeyboardKey::F5 => KeyMapping::App(AppControlAction::SaveState),
         KeyboardKey::F9 => KeyMapping::App(AppControlAction::LoadState),
         KeyboardKey::Digit(slot @ 0..=9) => {
@@ -190,6 +194,14 @@ mod tests {
         assert_eq!(
             controller.apply_key(KeyboardKey::Space, true),
             Some(AppControlAction::TogglePause)
+        );
+        assert_eq!(
+            controller.apply_key(KeyboardKey::F, true),
+            Some(AppControlAction::SaveState)
+        );
+        assert_eq!(
+            controller.apply_key(KeyboardKey::L, true),
+            Some(AppControlAction::LoadState)
         );
         assert_eq!(
             controller.apply_key(KeyboardKey::F5, true),

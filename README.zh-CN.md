@@ -107,8 +107,8 @@ cargo run -- path/to/game.nes
 | Start | Enter |
 | Select | Right Shift、S 或 Tab |
 | 暂停 / 恢复 | Space 或 P |
-| 保存即时存档 | F5 |
-| 读取即时存档 | F9 |
+| 保存即时存档 | F 或 F5 |
+| 读取即时存档 | L 或 F9 |
 | 选择存档槽 | 1、2、3 |
 | 退出 | Escape |
 
