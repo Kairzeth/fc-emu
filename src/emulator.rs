@@ -143,6 +143,9 @@ mod tests {
 
     #[test]
     fn bundled_target_rom_loads_and_steps() {
+        if !default_rom_available() {
+            return;
+        }
         let rom = Rom::from_path(crate::DEFAULT_ROM_PATH).unwrap();
         let mut emulator =
             Emulator::new(rom, "Super Mario Bros. (Japan, USA).nes".to_string()).unwrap();
@@ -153,6 +156,9 @@ mod tests {
 
     #[test]
     fn bundled_target_rom_runs_multiple_frames_without_stopping() {
+        if !default_rom_available() {
+            return;
+        }
         let rom = Rom::from_path(crate::DEFAULT_ROM_PATH).unwrap();
         let mut emulator =
             Emulator::new(rom, "Super Mario Bros. (Japan, USA).nes".to_string()).unwrap();
@@ -169,6 +175,9 @@ mod tests {
 
     #[test]
     fn bundled_target_rom_accepts_start_input_and_keeps_running() {
+        if !default_rom_available() {
+            return;
+        }
         let rom = Rom::from_path(crate::DEFAULT_ROM_PATH).unwrap();
         let mut emulator =
             Emulator::new(rom, "Super Mario Bros. (Japan, USA).nes".to_string()).unwrap();
@@ -191,6 +200,9 @@ mod tests {
 
     #[test]
     fn bundled_target_rom_framebuffer_updates_after_start() {
+        if !default_rom_available() {
+            return;
+        }
         let rom = Rom::from_path(crate::DEFAULT_ROM_PATH).unwrap();
         let mut emulator =
             Emulator::new(rom, "Super Mario Bros. (Japan, USA).nes".to_string()).unwrap();
@@ -220,6 +232,9 @@ mod tests {
 
     #[test]
     fn bundled_target_rom_uses_only_dmc_direct_load_on_start_path() {
+        if !default_rom_available() {
+            return;
+        }
         let rom = Rom::from_path(crate::DEFAULT_ROM_PATH).unwrap();
         let mut emulator =
             Emulator::new(rom, "Super Mario Bros. (Japan, USA).nes".to_string()).unwrap();
@@ -252,5 +267,9 @@ mod tests {
             }
         }
         colors.len()
+    }
+
+    fn default_rom_available() -> bool {
+        std::path::Path::new(crate::DEFAULT_ROM_PATH).exists()
     }
 }
