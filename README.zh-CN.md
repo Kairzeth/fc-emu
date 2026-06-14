@@ -94,6 +94,17 @@ cargo run
 cargo run -- path/to/game.nes
 ```
 
+## 发布
+
+推送版本 tag 后，GitHub Actions 会自动构建 macOS 版本：
+
+```bash
+git tag v0.1.0
+git push origin main --tags
+```
+
+发布流程会运行测试、构建 release 二进制、打包 `fc-emu.app`，然后创建 GitHub Release 并上传产物。Release 产物不包含 ROM 文件。
+
 ## 按键
 
 | FC/NES 按键 | 键盘 |

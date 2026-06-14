@@ -94,6 +94,17 @@ Run with an explicit ROM path:
 cargo run -- path/to/game.nes
 ```
 
+## Release
+
+GitHub Actions builds a macOS release when a version tag is pushed:
+
+```bash
+git tag v0.1.0
+git push origin main --tags
+```
+
+The release workflow runs the test suite, builds the release binary, packages `fc-emu.app`, and creates a GitHub Release with the artifacts attached. ROM files are not included in release artifacts.
+
 ## Controls
 
 | NES Button | Keyboard |

@@ -1,0 +1,54 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag, for example v0.1.0"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    name: Build macOS release
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Test
+        run: cargo test --locked
+
+      - name: Build app bundle
+        run: scripts/package_macos_app.sh release fc-emu fc-emu
+
+      - name: Package artifacts
+        run: |
+          mkdir -p release
+          ditto -c -k --keepParent dist/fc-emu.app release/fc-emu-macos-app.zip
+          cp target/release/fc-emu release/fc-emu-macos
+          chmod +x release/fc-emu-macos
+
+      - name: Create GitHub release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          gh release create "$RELEASE_TAG" \
+            release/fc-emu-macos-app.zip \
+            release/fc-emu-macos \
+            --target "$GITHUB_SHA" \
+            --title "$RELEASE_TAG" \
+            --notes "macOS build for fc-emu. ROM files are not included; place your legally obtained .nes file under rom/ or pass a ROM path on launch."

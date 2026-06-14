@@ -797,7 +797,7 @@ fn menu_command_at(x: f64, y: f64, scale: u32) -> Option<MenuCommand> {
 
 struct AudioOutput {
     _stream: Option<Stream>,
-    samples: Arc<Mutex<VecDeque<f32>>>,
+    queue: Arc<Mutex<AudioQueue>>,
 }
 
 impl AudioOutput {
@@ -808,7 +808,7 @@ impl AudioOutput {
                 warn!(%err, "audio output disabled");
                 Self {
                     _stream: None,
-                    samples: Arc::new(Mutex::new(VecDeque::new())),
+                    queue: Arc::new(Mutex::new(AudioQueue::new(44_100.0))),
                 }
             }
         }
@@ -825,14 +825,27 @@ impl AudioOutput {
         let sample_format = supported.sample_format();
         let config: StreamConfig = supported.into();
         let channels = usize::from(config.channels);
-        let samples = Arc::new(Mutex::new(VecDeque::with_capacity(8192)));
-        let stream_samples = samples.clone();
+        let output_sample_rate = config.sample_rate as f32;
+        let queue = Arc::new(Mutex::new(AudioQueue::new(output_sample_rate)));
+        let stream_queue = queue.clone();
         let err_fn = |err| warn!(%err, "audio stream error");
 
         let stream = match sample_format {
             SampleFormat::F32 => device.build_output_stream(
                 &config,
-                move |data: &mut [f32], _| write_audio_f32(data, channels, &stream_samples),
+                move |data: &mut [f32], _| write_audio_f32(data, channels, &stream_queue),
+                err_fn,
+                None,
+            ),
+            SampleFormat::I16 => device.build_output_stream(
+                &config,
+                move |data: &mut [i16], _| write_audio_i16(data, channels, &stream_queue),
+                err_fn,
+                None,
+            ),
+            SampleFormat::U16 => device.build_output_stream(
+                &config,
+                move |data: &mut [u16], _| write_audio_u16(data, channels, &stream_queue),
                 err_fn,
                 None,
             ),
@@ -855,10 +868,10 @@ impl AudioOutput {
             .play()
             .context("failed to start output audio stream")?;
 
-        info!(channels, "audio output started");
+        info!(channels, output_sample_rate, "audio output started");
         Ok(Self {
             _stream: Some(stream),
-            samples,
+            queue,
         })
     }
 
@@ -869,34 +882,128 @@ impl AudioOutput {
             return;
         }
 
-        if let Ok(mut queue) = self.samples.lock() {
-            let max_queue = 4096;
-            while queue.len() > max_queue {
-                queue.pop_front();
-            }
-            for sample in drained {
-                if queue.len() >= max_queue {
-                    queue.pop_front();
-                }
-                queue.push_back(sample.clamp(-1.0, 1.0));
-            }
+        if let Ok(mut queue) = self.queue.lock() {
+            queue.push_samples(drained);
         }
     }
 
     fn clear(&self) {
-        if let Ok(mut queue) = self.samples.lock() {
+        if let Ok(mut queue) = self.queue.lock() {
             queue.clear();
         }
     }
 }
 
-fn write_audio_f32(data: &mut [f32], channels: usize, samples: &Arc<Mutex<VecDeque<f32>>>) {
-    let mut queue = samples.lock().ok();
+struct AudioQueue {
+    samples: VecDeque<f32>,
+    output_sample_rate: f32,
+    resample_phase: f32,
+    previous_sample: f32,
+    next_sample: f32,
+    high_pass_input: f32,
+    high_pass_output: f32,
+    primed: bool,
+}
+
+impl AudioQueue {
+    fn new(output_sample_rate: f32) -> Self {
+        Self {
+            samples: VecDeque::with_capacity(8192),
+            output_sample_rate,
+            resample_phase: 0.0,
+            previous_sample: 0.0,
+            next_sample: 0.0,
+            high_pass_input: 0.0,
+            high_pass_output: 0.0,
+            primed: false,
+        }
+    }
+
+    fn push_samples(&mut self, drained: Vec<f32>) {
+        const MAX_QUEUE: usize = 8192;
+        while self.samples.len() > MAX_QUEUE {
+            self.samples.pop_front();
+        }
+        for sample in drained {
+            if self.samples.len() >= MAX_QUEUE {
+                self.samples.pop_front();
+            }
+            self.samples.push_back(sample.clamp(-1.0, 1.0));
+        }
+    }
+
+    fn clear(&mut self) {
+        self.samples.clear();
+        self.resample_phase = 0.0;
+        self.previous_sample = 0.0;
+        self.next_sample = 0.0;
+        self.high_pass_input = 0.0;
+        self.high_pass_output = 0.0;
+        self.primed = false;
+    }
+
+    fn pop_resampled(&mut self) -> f32 {
+        const INPUT_SAMPLE_RATE: f32 = 44_100.0;
+
+        if !self.primed {
+            let Some(first) = self.samples.pop_front() else {
+                return 0.0;
+            };
+            self.previous_sample = first;
+            self.next_sample = self.samples.pop_front().unwrap_or(first);
+            self.primed = true;
+        }
+
+        let sample =
+            self.previous_sample + (self.next_sample - self.previous_sample) * self.resample_phase;
+        self.resample_phase += INPUT_SAMPLE_RATE / self.output_sample_rate;
+        while self.resample_phase >= 1.0 {
+            self.resample_phase -= 1.0;
+            self.previous_sample = self.next_sample;
+            self.next_sample = self.samples.pop_front().unwrap_or(self.previous_sample);
+        }
+        let filtered = sample - self.high_pass_input + 0.995 * self.high_pass_output;
+        self.high_pass_input = sample;
+        self.high_pass_output = filtered;
+        filtered.clamp(-1.0, 1.0)
+    }
+}
+
+fn write_audio_f32(data: &mut [f32], channels: usize, queue: &Arc<Mutex<AudioQueue>>) {
+    let mut queue = queue.lock().ok();
     for frame in data.chunks_mut(channels) {
         let sample = queue
             .as_mut()
-            .and_then(|queue| queue.pop_front())
+            .map(|queue| queue.pop_resampled())
             .unwrap_or(0.0);
+        for output in frame {
+            *output = sample;
+        }
+    }
+}
+
+fn write_audio_i16(data: &mut [i16], channels: usize, queue: &Arc<Mutex<AudioQueue>>) {
+    let mut queue = queue.lock().ok();
+    for frame in data.chunks_mut(channels) {
+        let sample = queue
+            .as_mut()
+            .map(|queue| queue.pop_resampled())
+            .unwrap_or(0.0);
+        let sample = (sample * f32::from(i16::MAX)) as i16;
+        for output in frame {
+            *output = sample;
+        }
+    }
+}
+
+fn write_audio_u16(data: &mut [u16], channels: usize, queue: &Arc<Mutex<AudioQueue>>) {
+    let mut queue = queue.lock().ok();
+    for frame in data.chunks_mut(channels) {
+        let sample = queue
+            .as_mut()
+            .map(|queue| queue.pop_resampled())
+            .unwrap_or(0.0);
+        let sample = ((sample * 0.5 + 0.5) * f32::from(u16::MAX)) as u16;
         for output in frame {
             *output = sample;
         }
